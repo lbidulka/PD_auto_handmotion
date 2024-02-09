@@ -14,13 +14,13 @@ class data_timeseries():
         handednesses = data['handednesses']
         return x, y, subj_ids, handednesses
     
-    def get_subj_data(self, subj_id):
+    def get_subj_data(self, subj_ids):
         '''
-        Get all samples for specified subject
+        Get all samples for specified list of subjects
         '''
-        subj_idxs = np.where(self.subj_ids == subj_id)[0]
+        subj_idxs = np.where(np.isin(self.subj_ids, subj_ids))[0]
 
-        # get data for this subject
+        # get data for these subjects
         subj_data = self.x[subj_idxs]
         subj_labels = self.y[subj_idxs]
         return [subj_data, subj_labels]

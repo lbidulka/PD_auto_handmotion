@@ -86,3 +86,9 @@ class UPDRS_DSP():
             
             slowings.append(slowing)
         return slowings
+    
+    def train(self, x, y):
+        '''
+        Train the model on the given data (DUMMY, SINCE THIS IS DSP BASED)
+        '''
+        pass
