@@ -3,15 +3,20 @@ import numpy as np
 from scipy import io
 
 
-def remove_unlabeled(x, y, subj_ids=None, handednesses=None, combine_34=True):
+def remove_unlabeled(x, y, subj_ids=None, handednesses=None, 
+                     combine_34=True, rej_either=True):
     '''
     Remove samples with label == -1
     '''
     # y is a list of lists, and we want to rej any entry which contains a -1
     rej_idxs = []
     for i, labels in enumerate(y):
-        if -1 in labels:
-            rej_idxs.append(i)
+        if rej_either:
+            if -1 in labels:
+                rej_idxs.append(i)
+        else:            
+            if all([l == -1 for l in labels]):
+                rej_idxs.append(i)
 
     x_out = np.delete(x, rej_idxs, axis=0)
     y_out = np.delete(y, rej_idxs, axis=0)
