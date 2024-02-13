@@ -3,11 +3,12 @@ import numpy as np
 from scipy import io
 
 
-def remove_unlabeled(x, y, subj_ids=None, handednesses=None, 
+def remove_unlabeled(subj_data, subj_ids=None, handednesses=None, 
                      combine_34=True, rej_either=True):
     '''
     Remove samples with label == -1
     '''
+    x, y = subj_data[0], subj_data[1]
     # y is a list of lists, and we want to rej any entry which contains a -1
     rej_idxs = []
     for i, labels in enumerate(y):

@@ -54,40 +54,45 @@ class Base_DeepNet():
                     eval_labels[i] = labels[i,labels[i] != -1][0]
                 else:
                     eval_labels[i] = labels[i,self.labeler_idx]
-                    
+
             loss = self.criterion(outputs, eval_labels)
         return loss
 
-    def train(self, x, y):
+    def setup_dataset(self, x, y):
         '''
         '''
         # Create dataset
         x_tensor = torch.from_numpy(x).float()
-        # y_tensor = torch.from_numpy(y).float()
-        y_tensor = torch.from_numpy(y).long()
+        y_tensor = torch.from_numpy(y).long() if self.task == 'multiclass' else torch.from_numpy(y).float()
         transforms = [loader.scale_rand, loader.noise_rand]
 
         # Split the tensors into Train/val
         val_size = int(x_tensor.shape[0] * self.val_frac)
         train_size = x_tensor.shape[0] - val_size
+        trainset, valset = torch.utils.data.random_split(loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), transforms=transforms, use_ratio=self.use_ratio), 
+                                                         [train_size, val_size])
 
-        trainset, valset = torch.utils.data.random_split(loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), transforms=transforms), [train_size, val_size])
-
-        # # Setup weighted random sample for trainset
+        # Setup weighted random sample for trainset
         if self.task == 'binclass':
             class_sample_count = torch.tensor(
                 [(y_tensor == 0).sum(), (y_tensor == 1).sum()])
-            # weight = 1. / class_sample_count.float()
             ratio = class_sample_count[1] / class_sample_count[0]
             self.class0_reweight = ratio
-            
         #     samples_weight = weight[y_tensor.long()]
         #     sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight))
         #     self.shuffle = False
         # else:
         #     sampler = None
         sampler = None
+        
+        return trainset, valset, sampler
 
+
+    def train(self, x, y):
+        '''
+        '''
+        # Setup data
+        trainset, valset, sampler = self.setup_dataset(x, y)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, 
                                                   shuffle=self.shuffle, drop_last=self.drop_last, 
                                                   sampler=sampler, num_workers=self.num_workers)

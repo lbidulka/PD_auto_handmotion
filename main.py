@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 # from models.dsp_updrs import UPDRS_DSP
 # from models.simple_mlp import SimpleMLP
-from models import dsp_updrs, simple_mlp, simple_cnn
+from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp
 
 import data.timeseries.data_timeseries as data_timeseries
 from utils import evaluation as eval_utils
@@ -34,20 +34,20 @@ def leave_one_out_eval(args, model, data):
     '''
     leave-one-out train/evaluation over all samples. Excluding 1 subjects samples at a time.
     '''
-    combine_34 = True
+    combine_34 = False
     rej_either = False   # if True, reject samples if any label == -1. If False, reject if all labels == -1
 
     eval_preds, eval_targets = [], []
     subj_ids = np.unique(data.subj_ids)
     print(f'Leave-one-out Eval on {len(subj_ids)} subjects:')
     for subj_id in tqdm(subj_ids):
-        eval_subj_data = data.get_subj_data([subj_id])
-        train_subj_data = data.get_subj_data(subj_ids[subj_ids != subj_id])
+        eval_subj_data = data.get_subj_data([subj_id], model.use_ratio)
+        train_subj_data = data.get_subj_data(subj_ids[subj_ids != subj_id], model.use_ratio)
         
         # remove samples with label == -1
-        train_x, train_y = data_utils.remove_unlabeled(train_subj_data[0], train_subj_data[1], 
+        train_x, train_y = data_utils.remove_unlabeled(train_subj_data, 
                                                        combine_34=combine_34, rej_either=rej_either)
-        test_x, test_y = data_utils.remove_unlabeled(eval_subj_data[0], eval_subj_data[1], 
+        test_x, test_y = data_utils.remove_unlabeled(eval_subj_data,
                                                      combine_34=combine_34)
 
         # Convert to binary classification if needed
@@ -83,13 +83,12 @@ def leave_one_out_eval(args, model, data):
         print_metrics(maj_metrics)
 
 
-
 if __name__ == '__main__':
     args = parse_args()
     pwd = os.getcwd()
-    data_path = pwd + '/data/timeseries/' + 'CAMERA_UPDRS/data_all.npz'
+    data_path = pwd + '/data/timeseries/' + 'CAMERA_UPDRS/handmotion_all.npz'
 
-    eval_model = 'simple_cnn'   # updrs_dsp, simple_mlp, simple_cnn
+    eval_model = 'ratio_mlp'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
 
     # Define the model and data
     data = data_timeseries.data_timeseries(data_path)
@@ -97,6 +96,9 @@ if __name__ == '__main__':
         model = dsp_updrs.UPDRS_DSP()
     elif eval_model == 'simple_mlp':
         model = simple_mlp.SimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
+                                     task=args.task,)
+    elif eval_model == 'ratio_mlp':
+        model = ratio_mlp.RatioSimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
                                      task=args.task,)
     elif eval_model == 'simple_cnn':
         model = simple_cnn.SimpleCNN(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 

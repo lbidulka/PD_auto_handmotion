@@ -1,18 +1,16 @@
 import torch
-import numpy as np
 
-import utils.dataloader as loader
 from .base_deepnet import Base_DeepNet
 
-# Simple MLP
-class SimpleMLP(Base_DeepNet):
+# Simple MLP, + use upscaling ratio as input
+class RatioSimpleMLP(Base_DeepNet):
     def __init__(self, sample_len, in_channels, 
                  task, ) -> None:
         super().__init__()
         # Task
         self.task = task #'multiclass'
-        self.labeler_idx = 0
-        self.use_ratio = False
+        self.labeler_idx = 1
+        self.use_ratio = True
 
         # Data params
         self.shuffle = True
@@ -48,15 +46,15 @@ class SimpleMLP(Base_DeepNet):
             self.val_frac = 0.25
             self.batch_size = 64
             self.num_epochs = 35
-            self.lr = 3e-4
+            self.lr = 5e-5
         else:
             raise NotImplementedError
 
         # Init
         self._build_model()
-
+    
     def _build_model(self):
-        self.model = MLP(data_channels=self.data_channels, 
+        self.model = RatioMLP(data_channels=self.data_channels, 
                          input_dim=self.input_dim, 
                          hidden_dim=self.hidden_dim, 
                          output_dim=self.output_dim, 
@@ -66,25 +64,33 @@ class SimpleMLP(Base_DeepNet):
             self.criterion = torch.nn.CrossEntropyLoss()
         elif self.task == 'binclass':
             self.criterion = torch.nn.BCELoss(reduction='none')
-        # self.criterion = torch.nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
-
-class MLP(torch.nn.Module):
+class RatioMLP(torch.nn.Module):
     def __init__(self, data_channels, input_dim, hidden_dim, output_dim, dropout):
-        super(MLP, self).__init__()
+        super(RatioMLP, self).__init__()
         self.input_dim = input_dim * data_channels
         self.output_dim = output_dim
-        self.fc1 = torch.nn.Linear(self.input_dim, hidden_dim)
-        self.fc2 = torch.nn.Linear(hidden_dim, output_dim)
+        self.data_channels = data_channels
+        # Layer fusion
+        self.fc_ts = torch.nn.Linear(self.input_dim, hidden_dim // 4 * 3 )
+        self.fc_ra = torch.nn.Linear(1, hidden_dim // 4)
+
+        self.out = torch.nn.Linear(hidden_dim, output_dim)
         self.dropout = torch.nn.Dropout(dropout)
 
-    def forward(self, x):
-        x = x.view(-1, self.input_dim)
-        x = torch.nn.functional.relu(self.fc1(x))
+    def forward(self, x_in):
+        r = x_in[:,-1,0].view(-1,1)
+        x = x_in[:,:-1].view(-1, self.input_dim)
+        
+        # timeseries branch
+        x = torch.nn.functional.relu(self.fc_ts(x))
         x = self.dropout(x)
-        x = self.fc2(x)
+        # ratio branch
+        r = torch.nn.functional.relu(self.fc_ra(r))
+        r = self.dropout(r)
+        # fusion & out
+        x = torch.cat((x,r),1)
+        x = self.out(x)
         x = x.view(-1, self.output_dim)
         return x
-
-

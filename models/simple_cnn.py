@@ -12,6 +12,7 @@ class SimpleCNN(Base_DeepNet):
         # Task
         self.task = task #'multiclass'
         self.labeler_idx = 1
+        self.use_ratio = False
 
         # Data params
         self.shuffle = True
