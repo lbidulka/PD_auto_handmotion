@@ -9,6 +9,7 @@ class SimpleCNN(Base_DeepNet):
     def __init__(self, sample_len, in_channels,
                  task,) -> None:
         super().__init__()
+        self.name = 'simple_cnn'
         # Task
         self.task = task #'multiclass'
         self.labeler_idx = 1

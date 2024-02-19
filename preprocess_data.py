@@ -105,10 +105,12 @@ if __name__ == '__main__':
     print('Label Distribution: ', np.unique(y, return_counts=True))
     
     # Save entire dataset to single file
+    out_filepath = os.path.join(args.outputFolder, 'handmotion_all.npz')
+    print('\nSaving to file: ', out_filepath)
     train_data_dict = {'samples': np.stack(finger_dists_upscale), 
                        'labels': y, 
                        'subj_ids': np.array(subj_ids), 
                        'handednesses': np.array(handednesses),
                        'upscale_ratios': np.array(upscale_ratios),
                        }
-    np.savez(os.path.join(args.outputFolder, 'handmotion_all.npz'), **train_data_dict)
+    np.savez(out_filepath, **train_data_dict)

@@ -103,6 +103,7 @@ class Base_DeepNet():
         # Train
         best_model = None
         for epoch in range(self.num_epochs):
+            train_loss = 0
             self.model.train()
             for i, data in enumerate(trainloader, 0):
                 inputs, labels = data
@@ -110,16 +111,15 @@ class Base_DeepNet():
                 self.optimizer.zero_grad()
                 outputs = self.model(inputs)
                 loss = self.loss(outputs, labels)
+                train_loss += loss.item()
                 loss.backward()
                 self.optimizer.step()
-                if self.print_loss and (i % 100 == 0) and (epoch % self.print_epochs == 0):
-                    print(f'|| Epoch {epoch} Iter {i} || Loss: {loss.item():.3}')
-            
+                # if self.print_loss and (epoch % self.print_epochs == 0):
+                #     print(f'|| Epoch {epoch} Iter {i} ||      Loss: {loss.item():.3f}')
+            train_loss /= len(trainloader)
             # Validate
             self.model.eval()
-            val_loss = 0.0
-            correct = 0
-            total = 0
+            val_loss = 0
             with torch.no_grad():
                 for data in valloader:
                     inputs, labels = data
@@ -127,23 +127,17 @@ class Base_DeepNet():
                     outputs = self.model(inputs)
                     loss = self.loss(outputs, labels)
                     val_loss += loss.item()
-                    # total += labels.size(0)
-                    # if self.task == 'binclass':
-                    #     predicted = (outputs > 0.5).int()
-                    # else:
-                    #     _, predicted = outputs.max(1)
-                    # correct += predicted.eq(labels).sum().item()
             val_loss /= len(valloader)
-            if self.print_loss and (epoch % self.print_epochs == 0):
-                print(f'                     Val Loss: {val_loss:.3f}') #, Val Acc: {(100 * correct / total):.3f}')
-            
             # Save best model
+            if self.print_loss and (epoch % self.print_epochs == 0):
+                print(f'|| Epoch {epoch} Iter {i} ||  Train Loss: {train_loss:.3f}, Val Loss: {val_loss:.3f}')
+                # print(f'                       Val Loss: {val_loss:.3f}') 
             if epoch == 0:
                 best_loss = val_loss
             elif val_loss < best_loss:
                 best_loss = val_loss
                 best_model = self.model.state_dict()
-                print(f'                    ---> New best model saved at epoch {epoch}')
+                print(f'                          ---> New best model saved at epoch {epoch}')
         # Load best model after training
         if best_model is not None:
             self.model.load_state_dict(best_model)
