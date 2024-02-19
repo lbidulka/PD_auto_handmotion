@@ -1,6 +1,8 @@
 import argparse
 import os
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA, too_short, trimming
 import utils.features as features
@@ -14,6 +16,33 @@ def parse_args():
 
     args = parser.parse_args() 
     return args
+
+def plot_dists(finger_dists, labels, subj_ids, handednesses, fig_save_path, plot_subjs):
+    '''
+    DEBUG: plot the data, 4 samples per figure
+    '''
+    fig_samples = []
+    fig_titles = []
+    for i, data in enumerate(finger_dists):
+        if subj_ids[i] in plot_subjs:
+            fig_samples.append(data)
+            fig_titles.append(f"{subj_ids[i]}, {handednesses[i]}, score: {labels[i]}")
+            # plot every 4 samples
+            if len(fig_samples) == 4 or i == len(finger_dists)-1:
+                fig, axs = plt.subplots(4,1)
+                for j, sample in enumerate(fig_samples):
+                    axs[j].plot(sample, linewidth=0.5)
+                    axs[j].set_title(fig_titles[j])
+                    axs[j].set_ylim([0,2])
+                    axs[j].set_xlim([0, len(sample)])
+                    axs[j].xaxis.set_major_locator(ticker.AutoLocator())
+                    axs[j].xaxis.set_minor_locator(ticker.AutoMinorLocator())
+                # save the figure
+                fig.tight_layout()
+                plt.savefig(f"{fig_save_path}fig_{i-4}_{i}.png", bbox_inches='tight', dpi=300)
+                plt.close()
+                fig_samples = []
+                fig_titles = []
 
 if __name__ == '__main__':
     args = parse_args()
@@ -33,6 +62,8 @@ if __name__ == '__main__':
 
     # Upscale all trimmed samples to same length via interpolation (to length of longest sample)
     max_seq_len = max([data.shape[0] for data in finger_dists_trimmed])
+    # increase max_seq_len to nearest multiple of 8
+    max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
     finger_dists_upscale = []
     upscale_ratios = []
     for i, dists_data in enumerate(finger_dists_trimmed):
@@ -48,6 +79,17 @@ if __name__ == '__main__':
     # Load up labels
     y = np.vstack(labels)
 
+    # DEBUG: Plotting
+    figure_save_path = 'outputs/debug/feat_plots/'
+    PLOT_FIGS = False
+    PLOT_FIGS_INTERP = False
+    PLOT_SUBJS = ['36532', '18198', '21696', '34492', '17599', '23284', '35246', '36407']   # Change as desired
+
+    if PLOT_FIGS: plot_dists(finger_dists, labels, subj_ids, handednesses, 
+                             figure_save_path + 'full/', PLOT_SUBJS)
+    if PLOT_FIGS_INTERP: plot_dists(finger_dists_trimmed, labels, subj_ids, handednesses, 
+                                    figure_save_path + 'interp/', PLOT_SUBJS)
+
     # exclude samples which are too short
     for i, data in enumerate(finger_dists_upscale):
         if (subj_ids[i] in too_short.keys()) and (handednesses[i] in too_short[subj_ids[i]]):
@@ -57,6 +99,11 @@ if __name__ == '__main__':
             upscale_ratios.pop(i)
             y = np.delete(y, i, axis=0)
 
+    # Print label distribution
+    print('\nINFO: ')
+    print('Num samples: ', len(y))
+    print('Label Distribution: ', np.unique(y, return_counts=True))
+    
     # Save entire dataset to single file
     train_data_dict = {'samples': np.stack(finger_dists_upscale), 
                        'labels': y, 

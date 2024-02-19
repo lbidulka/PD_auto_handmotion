@@ -14,7 +14,6 @@ with open(UPDRS_labels_suzie_path, 'rb') as file:
     office_file.decrypt(decrypted_workbook)
 UPDRS_labels_suzie = pd.read_excel(decrypted_workbook, sheet_name='SA', header=2, usecols='A,B,Q,S,Z')
 UPDRS_labels_suzie = UPDRS_labels_suzie.dropna()
-
 # iterate over and populate the dict
 UPDRS_med_data_SA = {}
 for i, row in UPDRS_labels_suzie.iterrows():
@@ -24,140 +23,15 @@ for i, row in UPDRS_labels_suzie.iterrows():
     UPDRS_med_data_SA[str(row['ID'])] = label
 
 # Clinical UPDRS labels given by Kye Won Park
-UPDRS_med_data_KW = {
-    '18317': {'hand_movement': {'right_open_close': { '20230919': None,},
-                                'left_open_close': { '20230919': None,}},},
-    '24475': {'hand_movement': {'right_open_close': { '20230925': None,},
-                                'left_open_close': { '20230925': None,}},},
-    '30593': {'hand_movement': {'right_open_close': { '20230926': None,},
-                                'left_open_close': { '20230926': None,}},},
-    '34914': {'hand_movement': {'right_open_close': { '20230925': None,},
-                                'left_open_close': { '20230925': None,}},},
-    '38050': {'hand_movement': {'right_open_close': { '20230918': None,},
-                                'left_open_close': { '20230918': None,}},},
-                                
-    '29157': {'hand_movement': {'right_open_close': { '20230531': 2,},
-                                'left_open_close': { '20230531': 2,}},},
-
-    '35747': {'hand_movement': {'right_open_close': { '20230725': 1,},
-                                'left_open_close': { '20230725': 3,}},},
-    '16883': {'hand_movement': {'right_open_close': { '20230606': 1,},
-                                'left_open_close': { '20230606': 1,}},},
-
-    '17000': {'hand_movement': {'right_open_close': { '20230606': 0,},
-                                'left_open_close': { '20230606': 0,}},},
-    '21401': {'hand_movement': {'right_open_close': { '20230627': 2,},
-                                'left_open_close': { '20230627': 3,}},},
-    '23160': {'hand_movement': {'right_open_close': { '20230613': 0,},
-                                'left_open_close': { '20230613': 1,}},},
-    '24318': {'hand_movement': {'right_open_close': { '20230613': 1,},
-                                'left_open_close': { '20230613': 2,}},},
-    '24352': {'hand_movement': {'right_open_close': { '20230621': 2,},
-                                'left_open_close': { '20230621': 1,}},},
-
-    '24757': {'hand_movement': {'right_open_close': { '20230523': 1,},
-                                'left_open_close': { '20230523': 2,}},},
-    '27123': {'hand_movement': {'right_open_close': { '20230606': 3,},
-                                'left_open_close': { '20230606': 3,}},},
-    '28615': {'hand_movement': {'right_open_close': { '20230523': 2,},
-                                'left_open_close': { '20230523': 4,}},},
-    '31769': {'hand_movement': {'right_open_close': { '20230619': 1,},
-                                'left_open_close': { '20230619': 0,}},},
-    '31961': {'hand_movement': {'right_open_close': { '20230605': 2,},
-                                'left_open_close': { '20230605': 2,}},},
-
-    '32282': {'hand_movement': {'right_open_close': { '20230612': 2,},
-                                'left_open_close': { '20230612': 1,}},},
-    '32519': {'hand_movement': {'right_open_close': { '20230314': 0,},
-                                'left_open_close': { '20230314': 1,}},},
-    '33164': {'hand_movement': {'right_open_close': { '20230606': 3,},
-                                'left_open_close': { '20230606': 3,}},},
-    '33749': {'hand_movement': {'right_open_close': { '20230613': 0,},
-                                'left_open_close': { '20230613': 0,}},},
-
-    '35623': {'hand_movement': {'right_open_close': { '20230314': 0,},
-                                'left_open_close': { '20230314': 0,}},},
-    '36297': {'hand_movement': {'right_open_close': { '20230411': 1,},
-                                'left_open_close': { '20230411': 2,}},},
-    '38215': {'hand_movement': {'right_open_close': { '20230606': 1,},
-                                'left_open_close': { '20230606': 0,}},},
-    '38519': {'hand_movement': {'right_open_close': { '20230605': 4,},
-                                'left_open_close': { '20230605': 3,}},},
-
-    '15377': {'hand_movement': {'right_open_close': { '20230719': 1,},
-                                'left_open_close': { '20230719': 2,}},},
-    '19124': {'hand_movement': {'right_open_close': { '20230628': 2,},
-                                'left_open_close': { '20230628': 2,}},},
-    '17202': {'hand_movement': {'right_open_close': { '20230718': 3,},
-                                'left_open_close': { '20230718': 3,}},},
-    '24889': {'hand_movement': {'right_open_close': { '20230724': 1,},
-                                'left_open_close': { '20230724': 2,}},},
-    '25352': {'hand_movement': {'right_open_close': { '20230628': 3,},
-                                'left_open_close': { '20230628': 2,}},},
-
-    '28813': {'hand_movement': {'right_open_close': { '20230823': 2,},
-                                'left_open_close': { '20230823': 3,}},},
-    '30148': {'hand_movement': {'right_open_close': { '20230809': 0,},
-                                'left_open_close': { '20230809': 1,}},},
-    '30893': {'hand_movement': {'right_open_close': { '20230717': 1,},
-                                'left_open_close': { '20230717': 0,}},},
-    '30961': {'hand_movement': {'right_open_close': { '20230913': 1,},
-                                'left_open_close': { '20230913': 2,}},},
-    '30982': {'hand_movement': {'right_open_close': { '20230719': 2,},
-                                'left_open_close': { '20230719': 3,}},},
-
-    '28731': {'hand_movement': {'right_open_close': { '20230724': 2,},
-                                'left_open_close': { '20230724': 2,}},},
-    '31092': {'hand_movement': {'right_open_close': { '20230821': 2,},
-                                'left_open_close': { '20230821': 2,}},},
-    '31240': {'hand_movement': {'right_open_close': { '20230719': 2,},
-                                'left_open_close': { '20230719': 3,}},},
-    '31848': {'hand_movement': {'right_open_close': { '20230717': 0,},
-                                'left_open_close': { '20230717': 0,}},},
-    '32160': {'hand_movement': {'right_open_close': { '20230717': 2,},
-                                'left_open_close': { '20230717': 0,}},},
-
-    '28641': {'hand_movement': {'right_open_close': { '20230717': 1,},
-                                'left_open_close': { '20230717': 0,}},},
-    '38100': {'hand_movement': {'right_open_close': { '20230725': 0,},
-                                'left_open_close': { '20230725': 0,}},},
-    '38256': {'hand_movement': {'right_open_close': { '20230823': 3,},
-                                'left_open_close': { '20230823': 3,}},},
-    '39274': {'hand_movement': {'right_open_close': { '20230718': 3,},
-                                'left_open_close': { '20230718': 4,}},},
-    '39528': {'hand_movement': {'right_open_close': { '20230725': 2,},
-                                'left_open_close': { '20230725': 2,}},},
-
-    '34965': {'hand_movement': {'right_open_close': { '20230815': 3,},
-                                'left_open_close': { '20230815': 1,}},},
-    '36220': {'hand_movement': {'right_open_close': { '20230724': 2,},
-                                'left_open_close': { '20230724': 3,}},},
-    '36436': {'hand_movement': {'right_open_close': { '20230815': 2,},
-                                'left_open_close': { '20230815': 2,}},},
-    '38255': {'hand_movement': {'right_open_close': { '20230927': 2,},
-                                'left_open_close': { '20230927': 3,}},},
-    
-    '19015': {'hand_movement': {'right_open_close': { '20230623': 3,},
-                                'left_open_close': { '20230623': 3,}},},
-    '30104': {'hand_movement': {'right_open_close': { '20230809': 1,},
-                                'left_open_close': { '20230809': 2,}},},
-    '25934': {'hand_movement': {'right_open_close': { '20231016': 1,},
-                                'left_open_close': { '20231016': 2,}},},
-    '33151': {'hand_movement': {'right_open_close': { '20231016': 1,},
-                                'left_open_close': { '20231016': 0,}},},
-    '28411': {'hand_movement': {'right_open_close': { '20231023': 2,},
-                                'left_open_close': { '20231023': 2,}},},
-
-    '32853': {'hand_movement': {'right_open_close': { '20231106': 3,},
-                                'left_open_close': { '20231106': 3,}},},                            
-    '14555': {'hand_movement': {'right_open_close': { '20231107': 0,},
-                                'left_open_close': { '20231107': 0,}},},
-    '20959': {'hand_movement': {'right_open_close': { '20231003': 2,},
-                                'left_open_close': { '20231003': 1,}},},
-
-    # '': {'hand_movement': {'right_open_close': { '': ,},
-    #                             'left_open_close': { '': ,}},},
-}
+UPDRS_labels_kw = pd.read_excel(decrypted_workbook, sheet_name='KW', header=2, usecols='A,B,M,O,')
+UPDRS_labels_kw = UPDRS_labels_kw.dropna()
+# iterate over and populate the dict
+UPDRS_med_data_KW = {}
+for i, row in UPDRS_labels_kw.iterrows():
+    date = str(row['Date'])[:10].replace('-', '')
+    label = {'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']},
+                                 'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},}
+    UPDRS_med_data_KW[str(row['ID'])] = label
 
 # Samples with under 10 cycles
 too_short = {
@@ -389,14 +263,55 @@ trimming = {
     '18317': {'left': {0: {'start': 0, 'end': 775}},
               'right': {0: {'start': 125, 'end': 760,}},
               },
+
+    # NEW
+    '17599': {'left': {0: {'start': 655, 'end': 906}},
+              'right': {0: {'start': 45, 'end': 322,}},
+              },
+    '18198': {'left': {0: {'start': 0, 'end': 220}},
+              'right': {0: {'start': 130, 'end': 375,}},
+              },
+    '21696': {'left': {0: {'start': 30, 'end': 370}},
+              'right': {0: {'start': 120, 'end': 335,}},
+              },
+    '23284': {'left': {0: {'start': 10, 'end': 165}},
+              'right': {0: {'start': 7, 'end': 133,}},
+              },
+
+    '34492': {'left': {0: {'start': 10, 'end': 200}},
+              'right': {0: {'start': 140, 'end': 320,}},
+              },
+    '35246': {'left': {0: {'start': 75, 'end': 250}},
+              'right': {0: {'start': 35, 'end': 170,}},
+              },
+    '36407': {'left': {0: {'start': 0, 'end': 240}},
+              'right': {0: {'start': 0, 'end': 250,}},
+              },
+    '36532': {'left': {0: {'start': 10, 'end': 250}},
+              'right': {0: {'start': 30, 'end': 280,}},
+              },
+
+    # '': {'left': {0: {'start': 0, 'end': -1}},
+    #           'right': {0: {'start': 0, 'end': -1,}},
+    #           },
+    # '': {'left': {0: {'start': 0, 'end': -1}},
+    #           'right': {0: {'start': 0, 'end': -1,}},
+    #           },
+    # '': {'left': {0: {'start': 0, 'end': -1}},
+    #           'right': {0: {'start': 0, 'end': -1,}},
+    #           },
+    # '': {'left': {0: {'start': 0, 'end': -1}},
+    #           'right': {0: {'start': 0, 'end': -1,}},
+    #           },
+    # '': {'left': {0: {'start': 0, 'end': -1}},
+    #           'right': {0: {'start': 0, 'end': -1,}},
+    #           },
 }
 
 
 data = {
     'hand_movement': {
         'right_open_close': {
-                            #  '18198': '20230726',   # has brief false start
-
                             # ALL GOOD
                             '18317': '20230919',   # mild (no tremor, fast, good extension)
                             '20959': '20231003',   # severe (tremor, medium/fast speed, bad extension/stiff)
@@ -472,10 +387,26 @@ data = {
                             '32853': '20231106',
                             '14555': '20231107',
                             '20959': '20231003',
+
+                            # NEW
+                            '17599': '20230418',
+                            '18198': '20230726',
+                            '21696': '20230411',
+                            '23284': '20230620',
+                            
+                            '34492': '20230411',
+                            '35246': '20230724',
+                            '36407': '20230612',
+                            '36532': '20230822',
+
+                            # '': '',
+                            # '': '',
+                            # '': '',
+                            # '': '',
+                            # '': '',
+                            
                             },
         'left_open_close': {
-                            #  '18198': '20230726',   # has brief false start
-
                             # ALL GOOD
                             '18317': '20230919',   # mild (no tremor, fast, good extension)
                             '20959': '20231003',   # severe (tremor, medium/fast speed, bad extension/stiff)
@@ -507,7 +438,6 @@ data = {
                             '33164': '20230606', # severe (some tremor, medium speed, bad extension/stiff)
                             '33749': '20230613', # medium (mild tremor, fast speed, bad extension/stiff)                            
                             
-                            '32519': '20230314', # mild (no tremor, fast, good extension)'33023': '20230719', # severe (some tremor, v slow speed, medium extension/stiff)
                             '35623': '20230314', # severe (some tremor, medium speed, bad extension/stiff. halting)
                             '36297': '20230411', # medium (some tremor, fast speed, medium extension/stiff)
                             '38215': '20230606', # severe (some tremor, slow speed, bad extension/stiff)
@@ -551,6 +481,17 @@ data = {
                             '32853': '20231106',
                             '14555': '20231107',
                             '20959': '20231003',
+
+                            # NEW
+                            '17599': '20230418',
+                            '18198': '20230726',
+                            '21696': '20230411',
+                            '23284': '20230620',
+
+                            '34492': '20230411',
+                            '35246': '20230724',
+                            '36407': '20230612',
+                            '36532': '20230822',
                             },
     }
 }
