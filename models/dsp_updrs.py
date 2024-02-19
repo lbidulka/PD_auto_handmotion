@@ -6,11 +6,15 @@ import utils.features as features
 # DSP based UPDRS severity classifier
 class UPDRS_DSP():
     def __init__(self) -> None:
+        self.name = 'updrs_dsp'
+
         self.amp_dec_thresh = 0.9
+        self.hesitation_resid_thresh = 0.2
+        self.use_ratio = False
 
     def __call__(self, x,):
         self.get_features(x)
-        preds = np.maximum(self.amp_dec, self.slowing)
+        preds = np.array([self.amp_dec, self.slowing, self.num_hesitations]).max(axis=0)
         return preds
 
     def get_features(self, x):
@@ -21,8 +25,32 @@ class UPDRS_DSP():
         return
 
     def get_num_hesitations(self, x):
-        num_hesitations = None
-        return num_hesitations
+
+        '''
+        alg:
+        
+        1. get peaks and peak idxs
+        2. fit linear model to peak series
+        3. find residuals of linear model for the peaks
+        4. count num peaks with residuals > hesitation threshold
+        '''
+        hesitations_scores = []
+        for i in range(x.shape[0]):
+            peak_idxs = self.peak_idxs[i]
+            peak_vals = self.peak_vals[i]
+            hesitations = features.get_hesitations(peak_vals, peak_idxs, self.hesitation_resid_thresh)
+            num_hesitations = len(hesitations)
+            # Score logic from MDS-UPDRS:
+            if num_hesitations > 5:
+                hesitations_score = 3
+            elif num_hesitations >= 3:
+                hesitations_score = 2
+            elif num_hesitations >= 1:
+                hesitations_score = 1         
+            else:
+                hesitations_score = 0
+            hesitations_scores.append(hesitations_score)
+        return hesitations_scores
 
     def get_amplitude_decrement(self, peak_vals):
         '''
@@ -61,7 +89,6 @@ class UPDRS_DSP():
         peaks, peak_vals = features.get_cycle_peaks(x)
         return peaks, peak_vals
 
-    
     def get_slowing(self, peak_idxs):
         ''' 
         '''
@@ -90,5 +117,11 @@ class UPDRS_DSP():
     def train(self, x, y):
         '''
         Train the model on the given data (DUMMY, SINCE THIS IS DSP BASED)
+        '''
+        pass
+
+    def init_model(self,):
+        '''
+        Initialize the model (DUMMY, SINCE THIS IS DSP BASED)
         '''
         pass

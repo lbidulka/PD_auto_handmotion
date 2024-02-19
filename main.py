@@ -15,12 +15,13 @@ from utils import data as data_utils
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
+    parser.add_argument('--data_path', default='./data/timeseries/CAMERA_UPDRS/handmotion_all.npz', help='Path to timeseries data')
 
     args = parser.parse_args() 
     return args
 
 def print_metrics(metrics):
-    print('--- Metrics: ---')
+    print('-- Metrics: --')
     for rater in metrics.keys():
         print(f'Rater {rater}:')
         for metric, value in metrics[rater].items():
@@ -71,7 +72,7 @@ def leave_one_out_eval(args, model, data):
     metrics = eval_utils.get_metrics(eval_preds, eval_targets, 
                                      task=args.task)
     
-    print("\n--- Model ---")
+    print(f'\n--- {model.name} ---')
     print_metrics(metrics)
     
     if args.task == 'binclass':
@@ -85,13 +86,10 @@ def leave_one_out_eval(args, model, data):
 
 if __name__ == '__main__':
     args = parse_args()
-    pwd = os.getcwd()
-    data_path = pwd + '/data/timeseries/' + 'CAMERA_UPDRS/handmotion_all.npz'
+    eval_model = 'updrs_dsp'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
 
-    eval_model = 'ratio_mlp'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
-
-    # Define the model and data
-    data = data_timeseries.data_timeseries(data_path)
+    # Define model and data
+    data = data_timeseries.data_timeseries(args.data_path)
     if eval_model == 'updrs_dsp':
         model = dsp_updrs.UPDRS_DSP()
     elif eval_model == 'simple_mlp':
@@ -106,7 +104,7 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
-    # Evaluate the model
+    # Train/Eval the model
     leave_one_out_eval(args, model, data)
 
     

@@ -47,3 +47,14 @@ def get_finger_palm_distance(raw_data):
         norm_dists.append(dist / palm_size)
     return norm_dists
 
+def get_hesitations(peak_vals, peak_idxs, residual_thresh):
+    '''
+    Find hesitations in peak series, given peak vals and peak idxs and residual threshold
+    (Following Ryans Definition in: "Clinically-informed Automated Assessment of Finger Tapping
+    Videos in Parkinson’s Disease")
+    '''
+    poly_coeffs = np.polyfit(peak_idxs, peak_vals, 1)
+    residuals = np.abs(peak_vals - (poly_coeffs[0]*peak_idxs + poly_coeffs[1]))
+    hesitations = np.where(residuals > residual_thresh)[0]
+    return hesitations
+
