@@ -66,6 +66,7 @@ if __name__ == '__main__':
     max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
     finger_dists_upscale = []
     upscale_ratios = []
+    finger_dists_trimmed_pad = []
     for i, dists_data in enumerate(finger_dists_trimmed):
         # interpolate each channel
         interp_data = []
@@ -75,6 +76,7 @@ if __name__ == '__main__':
         upscale_ratios.append(xvals.shape[0] / dists_data.shape[0])
         interp_data = np.stack(interp_data, axis=1)
         finger_dists_upscale.append(interp_data)
+
 
     # Load up labels
     y = np.vstack(labels)
@@ -94,6 +96,7 @@ if __name__ == '__main__':
     for i, data in enumerate(finger_dists_upscale):
         if (subj_ids[i] in too_short.keys()) and (handednesses[i] in too_short[subj_ids[i]]):
             finger_dists_upscale.pop(i)
+            finger_dists_trimmed.pop(i)
             subj_ids.pop(i)
             handednesses.pop(i)
             upscale_ratios.pop(i)
@@ -102,12 +105,26 @@ if __name__ == '__main__':
     # Print label distribution
     print('\nINFO: ')
     print('Num samples: ', len(y))
-    print('Label Distribution: ', np.unique(y, return_counts=True))
+    # print('Label Distribution: ', np.unique(y, return_counts=True))
+    for i in range(y.shape[1]):
+        print(f'Labeller {i} dist: {np.unique(y[:,i], return_counts=True)}')
+    num_unique_subjs = len(np.unique(subj_ids))
+    print('Num unique subjects: ', num_unique_subjs)
+
+    # Setup ragged array of original samples
+    def stack_ragged(array_list, axis=0):
+        lengths = [np.shape(a)[axis] for a in array_list]
+        idx = np.cumsum(lengths[:-1])
+        stacked = np.concatenate(array_list, axis=axis)
+        return stacked, idx
+    finger_dists_stacked, finger_dists_stacked_idx = stack_ragged(finger_dists_trimmed)
     
     # Save entire dataset to single file
     out_filepath = os.path.join(args.outputFolder, 'handmotion_all.npz')
     print('\nSaving to file: ', out_filepath)
-    train_data_dict = {'samples': np.stack(finger_dists_upscale), 
+    train_data_dict = {'samples_scaled': np.stack(finger_dists_upscale), 
+                       'samples_unscaled': finger_dists_stacked, 
+                       'samples_unscaled_idxs': finger_dists_stacked_idx,
                        'labels': y, 
                        'subj_ids': np.array(subj_ids), 
                        'handednesses': np.array(handednesses),
