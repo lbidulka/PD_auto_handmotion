@@ -4,15 +4,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 
-from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA, too_short, trimming
+from data.CAMERA_expert_labels import too_short, trimming
 import utils.features as features
 import utils.data as data
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
-    parser.add_argument('--inputFolder', default='../my_hand/features/mat_booth/hand_movement', help='the filename to process')
-    parser.add_argument('--outputFolder', default='./data/timeseries/CAMERA_UPDRS/', help='output folder for processed data')
+    # parser.add_argument('--inputFolder', default='../my_hand/features/mat_booth/hand_movement', help='the filename to process')
+    # parser.add_argument('--outputFolder', default='./data/timeseries/', help='output folder for processed data')
+    parser.add_argument('--dataset', default='PD4T', help='Dataset to process')   # CAMERA, PD4T
 
     args = parser.parse_args() 
     return args
@@ -47,14 +48,15 @@ def plot_dists(finger_dists, labels, subj_ids, handednesses, fig_save_path, plot
 if __name__ == '__main__':
     args = parse_args()
     
-    file_list = os.listdir(args.inputFolder)
+    in_folder = f'data/{args.dataset}/pose_series/'
+    out_folder = f'data/{args.dataset}/timeseries/'
+
+    file_list = os.listdir(in_folder)
     file_list.sort()
+    file_list = [os.path.join(in_folder, f) for f in file_list]
 
     # Get raw timeseries data from pose files
-    raw_ts, trim_ts, labels, subj_ids, handednesses = data.load_raw_ts(file_list, args, 
-                                                                       UPDRS_med_data_KW, 
-                                                                       UPDRS_med_data_SA, 
-                                                                       trimming)
+    raw_ts, trim_ts, labels, subj_ids, handednesses = data.load_raw_ts(file_list, args, trimming)
     
     # Convert from full hand kpts to 5 channel distance from finger to palm
     finger_dists = features.get_finger_palm_distance(raw_ts)
@@ -83,9 +85,10 @@ if __name__ == '__main__':
 
     # DEBUG: Plotting
     figure_save_path = 'outputs/debug/feat_plots/'
-    PLOT_FIGS = False
-    PLOT_FIGS_INTERP = False
-    PLOT_SUBJS = ['36532', '18198', '21696', '34492', '17599', '23284', '35246', '36407']   # Change as desired
+    PLOT_FIGS = True
+    PLOT_FIGS_INTERP = True
+    # PLOT_SUBJS = ['36532', '18198', '21696', '34492', '17599', '23284', '35246', '36407']   # Change as desired
+    PLOT_SUBJS = ['003', '008', '001', '036']
 
     if PLOT_FIGS: plot_dists(finger_dists, labels, subj_ids, handednesses, 
                              figure_save_path + 'full/', PLOT_SUBJS)
@@ -120,7 +123,7 @@ if __name__ == '__main__':
     finger_dists_stacked, finger_dists_stacked_idx = stack_ragged(finger_dists_trimmed)
     
     # Save entire dataset to single file
-    out_filepath = os.path.join(args.outputFolder, 'handmotion_all.npz')
+    out_filepath = os.path.join(out_folder, 'handmotion_all.npz')
     print('\nSaving to file: ', out_filepath)
     train_data_dict = {'samples_scaled': np.stack(finger_dists_upscale), 
                        'samples_unscaled': finger_dists_stacked, 
