@@ -254,7 +254,7 @@ trimming = {
               'right': {0: {'start': 0, 'end': 395,}},
               },
     
-    '34914': {'left': {0: {'start': 75, 'end': 560}},
+    '34914': {'left': {0: {'start': 80, 'end': 500}},
               'right': {0: {'start': 50, 'end': 800,}},
               },
     '38050': {'left': {0: {'start': 50, 'end': 600}},

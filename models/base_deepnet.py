@@ -7,6 +7,7 @@ class Base_DeepNet():
     Base class for deep learning models
     '''
     def __init__(self) -> None:
+        self.name = 'default: base_deepnet'
         pass
 
     def __call__(self, x):
@@ -88,11 +89,30 @@ class Base_DeepNet():
         return trainset, valset, sampler
 
 
-    def train(self, x, y):
+    def train(self, x, y,
+              x_val=None, y_val=None):
         '''
         '''
         # Setup data
-        trainset, valset, sampler = self.setup_dataset(x, y)
+        if x_val is None:
+            trainset, valset, sampler = self.setup_dataset(x, y)
+        else:
+            x_tensor = torch.from_numpy(x).float()
+            x_val_tensor = torch.from_numpy(x_val).float()
+            y_tensor = torch.from_numpy(y).long()
+            y_val_tensor = torch.from_numpy(y_val).long() if self.task == 'multiclass' else torch.from_numpy(y_val).float()
+            transforms = [loader.scale_rand, loader.noise_rand,] # loader.amp_decrement]
+            transforms_p = [0.5, 0.5,] # 0.1]
+            trainset = loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), 
+                                                  transforms=transforms, 
+                                                  transforms_p=transforms_p, 
+                                                  use_ratio=self.use_ratio)
+            valset = loader.CustomTensorDataset(tensors=(x_val_tensor, y_val_tensor), 
+                                                transforms=transforms, 
+                                                transforms_p=transforms_p, 
+                                                use_ratio=self.use_ratio)
+            sampler = None
+
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, 
                                                   shuffle=self.shuffle, drop_last=self.drop_last, 
                                                   sampler=sampler, num_workers=self.num_workers)

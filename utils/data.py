@@ -4,6 +4,7 @@ from scipy import io
 
 from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA
 from data.PD4T_expert_labels import PD4T_handmotion_df
+import utils.features as features
 
 def remove_unlabeled(subj_data, subj_ids=None, handednesses=None, 
                      combine_34=True, rej_either=True):
@@ -145,7 +146,7 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
         if label_KW is None:
             label_KW = -1
     else:
-        label_KW = None
+        label_KW = -1
 
     if subj_id in UPDRS_med_data_SA.keys():
         try:
@@ -155,10 +156,15 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
             label_SA = -1
         if label_SA is None:
             label_SA = -1
+
+        # Special case, subject performed both actions and label is an anomaly
+        if subj_id == '25779':
+            label_SA = 2.0
+
     else:
-        label_SA = None
+        label_SA = -1
     
-    return [label_KW, label_SA]
+    return [float(label_KW), float(label_SA)]
 
 
     # if (subj_id in UPDRS_med_data_KW.keys()) or (subj_id in UPDRS_med_data_SA.keys()):
@@ -175,3 +181,49 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
     #             label_KW = -1
     #         if label_SA is None:
     #             label_SA = -1
+
+def auto_trim_dist_ts(dist_ts, trim_mask, num_cycles=10, num_passes=1,):
+    '''
+    Automatically trim the fingertip-palm distance timeseries to the desired number
+    of action cycles
+    '''
+    too_short_mask = [False for ts in dist_ts]
+    ts_trims = [ts for ts in dist_ts]
+    peaks = [[] for ts in dist_ts]
+    for i in range(num_passes):
+        for j, ts in enumerate(ts_trims):
+            # Only trim if mask is true
+            if trim_mask[j]:
+                # check number of peaks
+                peaks_idxs, peaks_vals = features.get_cycle_peaks(np.array([ts]), min_peak_dist=None, 
+                                                                keep_10=False, savgol_win=5, prominence=0.15)
+                peaks_idxs = peaks_idxs[0]
+                peaks_vals = peaks_vals[0]
+                start_idx = 0
+                end_idx = -1
+                # Too short?
+                if len(peaks_idxs) < num_cycles:
+                    too_short_mask[j] = True
+                    ts_trims[j] = ts[:25]
+                else:
+                    too_short_mask[j] = False
+                    # Too long?
+                    if len(peaks_idxs) != num_cycles:
+                        # trim end to end at trough after last peak
+                        end_idx = int(peaks_idxs[-1] + np.diff(peaks_idxs[-3:-1]).mean() / 2)
+                        # trim start to num_cycles cycles before end
+                        start_idx = int(peaks_idxs[-num_cycles] -np.diff(peaks_idxs[-num_cycles:-num_cycles+3]).mean() / 2)
+                        
+                        # trim start to start at trough before first peak
+                        # start_idx = int(peaks_idxs[0] - np.diff(peaks_idxs[:3]).mean() / 2)
+                        # start_idx = max(0, start_idx)
+                        # end_idx = int(peaks_idxs[num_cycles-1] + np.diff(peaks_idxs[num_cycles-3:num_cycles-1]).mean() / 2)
+
+                    # trim
+                    ts_trims[j] = ts[start_idx:end_idx]
+                    # ts_trims[j] = ts
+                peaks[j] = [peaks_idxs - start_idx, peaks_vals]
+                
+    # DEBUG: trim the too short series to only 2 samples
+    # ts_trims = [ts[:2] for ts, too_short in zip(ts_trims, too_short_mask) if too_short]  
+    return ts_trims, too_short_mask, peaks

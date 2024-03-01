@@ -15,7 +15,7 @@ from utils import data as data_utils
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
-    parser.add_argument('--data_path', default='./data/timeseries/CAMERA_UPDRS/handmotion_all.npz', help='Path to timeseries data')
+    parser.add_argument('--datasets', default='PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
 
     args = parser.parse_args() 
     return args
@@ -30,6 +30,41 @@ def print_metrics(metrics):
             else:
                 print(f'    {metric}: {value:.3f}')
         print('')
+
+def CA_TCC_eval(args, model,):
+    '''
+    Train/val/test split evaluation using splits from CA-TCC experiment
+    '''
+    assert args.task == 'multiclass'
+
+    combine_34 = False
+    unscaled_ts = False  # if True, use unscaled timeseries data
+
+    # Load data
+    data_splits_path = '../CA-TCC/data/camUPDRS/'
+    data = data_timeseries.data_timeseries(CATCC_splits_path=data_splits_path)
+    train_x = data.train_frac['samples'].numpy()
+    train_y = data.train_frac['labels'].numpy()
+    val_x = data.val_frac['samples'].numpy()
+    val_y = data.val_frac['labels'].numpy()
+    test_x = data.test['samples'].numpy()
+    test_y = data.test['labels'].numpy()
+    
+    # simulate multiple raters
+    train_y = np.repeat(train_y.reshape(-1,1), 2, axis=1)
+    val_y = np.repeat(val_y.reshape(-1,1), 2, axis=1)
+    test_y = np.repeat(test_y.reshape(-1,1), 2, axis=1)
+
+    # Train and eval
+    model.init_model()
+    model.train(train_x, train_y, x_val=val_x, y_val=val_y)
+    model.model.eval()
+    test_pred = model(test_x).numpy()
+
+    # Metrics
+    metrics = eval_utils.get_metrics(test_pred.reshape(-1,1), test_y, task=args.task)
+    print(f'\n--- {model.name} ---')
+    print_metrics(metrics)
 
 def leave_one_out_eval(args, model, data):
     '''
@@ -56,8 +91,6 @@ def leave_one_out_eval(args, model, data):
         if args.task == 'binclass':
             train_y[train_y > 0] = 1.0
             test_y[test_y > 0] = 1.0
-            # train_y = train_y.reshape(-1, 1)
-            # test_y = test_y.reshape(-1, 1)
 
         # Train and evaluate
         if test_x.shape[0] != 0:
@@ -83,14 +116,28 @@ def leave_one_out_eval(args, model, data):
                                              task=args.task)
         print("\n--- Majority Class Predictor (1) ---")
         print_metrics(maj_metrics)
+    elif args.task == 'multiclass':
+        # get avg class counts
+        class_cnts = []
+        for rater in range(eval_targets.shape[1]):
+            class_cnts.append(np.bincount(eval_targets[:,0].astype(int), minlength=4))                        
+        class_cnts = np.mean(class_cnts, axis=0)
+
+        # check against random predictor based on train label frequency
+        freq_preds = np.random.choice([0, 1, 2, 3, 4], size=eval_targets.shape[0], 
+                                     p=class_cnts/np.sum(class_cnts))
+        freq_metrics = eval_utils.get_metrics(freq_preds, eval_targets, 
+                                              task=args.task)
+        print("\n--- Frequency Class Predictor ---")
+        print_metrics(freq_metrics)
 
 
 if __name__ == '__main__':
     args = parse_args()
-    eval_model = 'updrs_dsp'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
+    eval_model = 'simple_mlp'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
 
     # Define model and data
-    data = data_timeseries.data_timeseries(args.data_path)
+    data = data_timeseries.data_timeseries(args.datasets)
     if eval_model == 'updrs_dsp':
         model = dsp_updrs.UPDRS_DSP(task=args.task,)
     elif eval_model == 'simple_mlp':
@@ -106,6 +153,7 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     # Train/Eval the model
-    leave_one_out_eval(args, model, data)
+    # leave_one_out_eval(args, model, data)
+    CA_TCC_eval(args, model)
 
     
