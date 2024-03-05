@@ -46,11 +46,33 @@ too_short = {
     '38215' : ['left',],
     '38256' : ['left','right'],
     '38519' : ['left','right'],
+    
+    # Invalid videos
+    '17434' : ['right',],    # barely opens hand,
+    '21696' : ['right'],    # kinda does a finger-tap action at the same time
+    '24192' : ['left', 'right'],
+    '24622' : ['left',],    
+    '25533' : ['right'],    # starts very close to camera then pulls quickly away. 
+
+    '25779' : ['left',],    # does left & right action in same video
+    '28615' : ['left'],     # hand out of view, not enough taps
+    '28726': ['left', 'right'],  # not enough taps, hand out of view
+    '29157': ['left','right'],  # changes action multiple times
+    '29570': ['left', 'right'],  # not enough taps, hand too close
+
+    '31092': ['left',],     # incorrect action performance "flicking"
+    '16827' : ['right', ],  # too close to camera, out of frame a number of times
+
+    # Maybe invalid videos
+    '15377' : ['left',],    # index finger taps against thumb, not fully open/close
+    
+    
     # '' : ['',],
     # '' : ['',],
     # '' : ['',],
 
     # '' : [,],
+
 }
 
 very_long = {   # end 1, end 2, ...
@@ -170,7 +192,7 @@ trimming = {
               'right': {0: {'start': 5, 'end': 220,}},
               },
 
-    '31240': {'left': {0: {'start': 10, 'end': 195}},
+    '31240': {'left': {0: {'start': 10, 'end': 170}},
               'right': {0: {'start': 0, 'end': -1,}},
               },
     '31769': {'left': {0: {'start': 0, 'end': -1}},
@@ -250,18 +272,19 @@ trimming = {
     '39274': {'left': {0: {'start': 0, 'end': -1}},
               'right': {0: {'start': 200, 'end': -1,}},
               },
-    '39528': {'left': {0: {'start': 0, 'end': 325}},
+    '39528': {'left': {0: {'start': 0, 'end': -1}},
               'right': {0: {'start': 0, 'end': 395,}},
               },
     
-    '34914': {'left': {0: {'start': 80, 'end': 500}},
+    # '34914': {'left': {0: {'start': 80, 'end': 500}},
+    '34914': {'left': {0: {'start': 20, 'end': 157}},
               'right': {0: {'start': 50, 'end': 800,}},
               },
-    '38050': {'left': {0: {'start': 50, 'end': 600}},
-              'right': {0: {'start': 40, 'end': 720,}},
+    '38050': {'left': {0: {'start': 50, 'end': 670}},
+              'right': {0: {'start': 20, 'end': 405,}},
               },
-    '18317': {'left': {0: {'start': 0, 'end': 775}},
-              'right': {0: {'start': 125, 'end': 760,}},
+    '18317': {'left': {0: {'start': 0, 'end': 165}},
+              'right': {0: {'start': 100, 'end': 760,}},
               },
 
     # NEW
@@ -271,7 +294,7 @@ trimming = {
     '18198': {'left': {0: {'start': 0, 'end': 220}},
               'right': {0: {'start': 130, 'end': 375,}},
               },
-    '21696': {'left': {0: {'start': 30, 'end': 370}},
+    '21696': {'left': {0: {'start': 55, 'end': 370}},
               'right': {0: {'start': 120, 'end': 335,}},
               },
     '23284': {'left': {0: {'start': 10, 'end': 165}},
@@ -289,6 +312,10 @@ trimming = {
               },
     '36532': {'left': {0: {'start': 10, 'end': 250}},
               'right': {0: {'start': 30, 'end': 280,}},
+              },
+
+    '25779': {'left': {0: {'start': 10, 'end': 415}},
+              'right': {0: {'start': 40, 'end': -1,}},
               },
 
     # '': {'left': {0: {'start': 0, 'end': -1}},
