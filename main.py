@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 # from models.dsp_updrs import UPDRS_DSP
 # from models.simple_mlp import SimpleMLP
-from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp
+from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml
 
 import data.timeseries.data_timeseries as data_timeseries
 from utils import evaluation as eval_utils
@@ -134,12 +134,15 @@ def leave_one_out_eval(args, model, data):
 
 if __name__ == '__main__':
     args = parse_args()
-    eval_model = 'simple_mlp'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
+    eval_model = 'feature_ml'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
+    classifier='svr' # Classifier to use for feature_ml: svr, svm, rf, dt
 
     # Define model and data
     data = data_timeseries.data_timeseries(args.datasets)
     if eval_model == 'updrs_dsp':
         model = dsp_updrs.UPDRS_DSP(task=args.task,)
+    elif eval_model == 'feature_ml':
+        model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
     elif eval_model == 'simple_mlp':
         model = simple_mlp.SimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
                                      task=args.task,)
@@ -153,7 +156,7 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     # Train/Eval the model
-    # leave_one_out_eval(args, model, data)
-    CA_TCC_eval(args, model)
+    leave_one_out_eval(args, model, data)
+    # CA_TCC_eval(args, model)
 
     

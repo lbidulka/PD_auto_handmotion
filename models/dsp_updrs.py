@@ -15,6 +15,8 @@ class UPDRS_DSP():
         self.use_ratio = False
 
     def __call__(self, x,):
+        for i in range(x.shape[0]):
+            x[i] = x[i].mean(axis = 1)
         self.get_features(x)
         preds = np.array([self.amp_dec, self.slowing, self.num_hesitations]).max(axis=0)
         if self.task == 'binclass':

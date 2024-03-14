@@ -2,7 +2,7 @@ import os
 import numpy as np
 from scipy import io
 
-from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA
+# from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA
 from data.PD4T_expert_labels import PD4T_handmotion_df
 import utils.features as features
 
@@ -195,34 +195,34 @@ def auto_trim_dist_ts(dist_ts, trim_mask, num_cycles=10, num_passes=1,):
             # Only trim if mask is true
             if trim_mask[j]:
                 # check number of peaks
-                peaks_idxs, peaks_vals = features.get_cycle_peaks(np.array([ts]), min_peak_dist=None, 
+                peak_idxs, peaks_vals = features.get_cycle_peaks(np.array([ts]), min_peak_dist=None, 
                                                                 keep_10=False, savgol_win=5, prominence=0.15)
-                peaks_idxs = peaks_idxs[0]
+                peak_idxs = peak_idxs[0]
                 peaks_vals = peaks_vals[0]
                 start_idx = 0
                 end_idx = -1
                 # Too short?
-                if len(peaks_idxs) < num_cycles:
+                if len(peak_idxs) < num_cycles:
                     too_short_mask[j] = True
                     ts_trims[j] = ts[:25]
                 else:
                     too_short_mask[j] = False
                     # Too long?
-                    if len(peaks_idxs) != num_cycles:
+                    if len(peak_idxs) != num_cycles:
                         # trim end to end at trough after last peak
-                        end_idx = int(peaks_idxs[-1] + np.diff(peaks_idxs[-3:-1]).mean() / 2)
+                        end_idx = int(peak_idxs[-1] + np.diff(peak_idxs[-3:-1]).mean() / 2)
                         # trim start to num_cycles cycles before end
-                        start_idx = int(peaks_idxs[-num_cycles] -np.diff(peaks_idxs[-num_cycles:-num_cycles+3]).mean() / 2)
+                        start_idx = int(peak_idxs[-num_cycles] -np.diff(peak_idxs[-num_cycles:-num_cycles+3]).mean() / 2)
                         
                         # trim start to start at trough before first peak
-                        # start_idx = int(peaks_idxs[0] - np.diff(peaks_idxs[:3]).mean() / 2)
+                        # start_idx = int(peak_idxs[0] - np.diff(peak_idxs[:3]).mean() / 2)
                         # start_idx = max(0, start_idx)
-                        # end_idx = int(peaks_idxs[num_cycles-1] + np.diff(peaks_idxs[num_cycles-3:num_cycles-1]).mean() / 2)
+                        # end_idx = int(peak_idxs[num_cycles-1] + np.diff(peak_idxs[num_cycles-3:num_cycles-1]).mean() / 2)
 
                     # trim
                     ts_trims[j] = ts[start_idx:end_idx]
                     # ts_trims[j] = ts
-                peaks[j] = [peaks_idxs - start_idx, peaks_vals]
+                peaks[j] = [peak_idxs - start_idx, peaks_vals]
                 
     # DEBUG: trim the too short series to only 2 samples
     # ts_trims = [ts[:2] for ts, too_short in zip(ts_trims, too_short_mask) if too_short]  
