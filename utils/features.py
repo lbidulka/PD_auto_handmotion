@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.signal as signal
+import pycatch22
 
 
 def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25):
@@ -267,3 +268,11 @@ def get_fatigue_minmax(input):
         return 10
     else:
         return result
+    
+def get_catch22_features(input):
+    results = []
+    for i in range(input.shape[0]):
+        result = pycatch22.catch22_all(input[i],catch24=True)
+        results.append(result['values'])
+    
+    return results
