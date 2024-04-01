@@ -71,12 +71,24 @@ class data_timeseries():
         # self.upscale_ratios = self.data['upscale_ratios']
         return 
     
-    def get_subj_data(self, subj_ids, use_ratio=False, unscaled=False):
+    def delete_idxs(self, idxs):
+        '''
+        Delete samples at specified indices
+        '''
+        self.x = np.delete(self.x, idxs, axis=0)
+        self.x_unscaled = [ts for i, ts in enumerate(self.x_unscaled) if i not in idxs]
+        self.y = np.delete(self.y, idxs, axis=0)
+        self.subj_ids = np.delete(self.subj_ids, idxs, axis=0)
+        self.handednesses = np.delete(self.handednesses, idxs, axis=0)
+        self.upscale_ratios = np.delete(self.upscale_ratios, idxs, axis=0)
+    
+    def get_subj_data(self, subj_ids, use_ratio=False, unscaled=False, combine_34=False):
         '''
         Get all samples for specified list of subjects
         '''
         subj_idxs = np.where(np.isin(self.subj_ids, subj_ids))[0]
         out_y = self.y[subj_idxs]
+        if combine_34: out_y[out_y == 4] = 3
         if unscaled:
             out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
         else:

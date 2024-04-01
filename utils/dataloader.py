@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 class CustomTensorDataset(torch.utils.data.Dataset):
     '''TensorDataset with support of transforms.
@@ -30,8 +31,14 @@ class CustomTensorDataset(torch.utils.data.Dataset):
 def scale_rand(x, y):
     return x * torch.empty(1).uniform_(0.9, 1.1), y
 
+def scale_rand_np(x, y):
+    return x * np.random.uniform(0.95, 1.0), y
+
 def noise_rand(x, y):
     return x + torch.empty(x.shape).normal_(0, 0.05), y
+
+def noise_rand_np(x, y):
+    return x + np.random.normal(0, 0.05, x.shape), y
 
 # UPDRS transforms
 def amp_decrement(x, y):

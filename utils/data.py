@@ -6,8 +6,29 @@ from scipy import io
 from data.PD4T_expert_labels import PD4T_handmotion_df
 import utils.features as features
 
+
+def equalize_class_samples(x_tensor_in, y_tensor_in, weight_annot_idx=1):
+    '''
+    Equalize the number of samples for each class in the dataset
+    by repeating samples from the minority classes
+    '''
+    x_tensor = x_tensor_in.copy()
+    y_tensor = y_tensor_in.copy()
+    # largest count will be the final target count
+    class_sample_count = np.array(
+        [len(y_tensor[y_tensor[:,weight_annot_idx] == t]) for t in np.unique(y_tensor)])
+    target_count = class_sample_count.max()
+    # repeat each class to match target count
+    for t in np.unique(y_tensor):
+        class_count = len(y_tensor[y_tensor[:,weight_annot_idx] == t])
+        if class_count < target_count:
+            repeat = int(np.ceil(target_count / class_count))
+            x_tensor = np.concatenate([x_tensor, x_tensor[y_tensor[:,weight_annot_idx] == t].repeat(repeat, 0)])
+            y_tensor = np.concatenate([y_tensor, y_tensor[y_tensor[:,weight_annot_idx] == t].repeat(repeat, 0)])
+    return x_tensor, y_tensor
+
 def remove_unlabeled(subj_data, subj_ids=None, handednesses=None, 
-                     combine_34=True, rej_either=True):
+                     combine_34=True, rej_either=True, rej_annot=None):
     '''
     Remove samples with label == -1
     '''
@@ -18,9 +39,13 @@ def remove_unlabeled(subj_data, subj_ids=None, handednesses=None,
         if rej_either:
             if -1 in labels:
                 rej_idxs.append(i)
-        else:            
-            if all([l == -1 for l in labels]):
-                rej_idxs.append(i)
+        else:
+            if rej_annot is not None:
+                if labels[rej_annot] == -1:
+                    rej_idxs.append(i)
+            else:   
+                if all([l == -1 for l in labels]):
+                    rej_idxs.append(i)
 
     x_out = np.delete(x, rej_idxs, axis=0)
     y_out = np.delete(y, rej_idxs, axis=0)
@@ -29,11 +54,11 @@ def remove_unlabeled(subj_data, subj_ids=None, handednesses=None,
     if combine_34: y_out[y_out == 4] = 3
 
     if subj_ids is None:
-        return x_out, y_out
+        return x_out, y_out, rej_idxs
     
     subj_ids_out = np.delete(subj_ids, rej_idxs, axis=0)
     handednesses_out = np.delete(handednesses, rej_idxs, axis=0)
-    return x_out, y_out, subj_ids_out, handednesses_out
+    return x_out, y_out, subj_ids_out, handednesses_out, rej_idxs
 
 def load_raw_ts(file_list, args, trimming):
     '''
