@@ -65,12 +65,14 @@ class Base_DeepNet():
         # Create dataset
         x_tensor = torch.from_numpy(x).float()
         y_tensor = torch.from_numpy(y).long() if self.task == 'multiclass' else torch.from_numpy(y).float()
-        transforms = [loader.scale_rand, loader.noise_rand]
 
         # Split the tensors into Train/val
         val_size = int(x_tensor.shape[0] * self.val_frac)
         train_size = x_tensor.shape[0] - val_size
-        trainset, valset = torch.utils.data.random_split(loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), transforms=transforms, use_ratio=self.use_ratio), 
+        trainset, valset = torch.utils.data.random_split(loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), 
+                                                                                    transforms=self.transforms,
+                                                                                    transforms_p=self.transforms_p, 
+                                                                                    use_ratio=self.use_ratio), 
                                                          [train_size, val_size])
 
         # Setup weighted random sample for trainset

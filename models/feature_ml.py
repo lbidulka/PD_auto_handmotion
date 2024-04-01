@@ -4,7 +4,10 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import mutual_info_regression
 from sklearn import tree
+
 import utils.features as features
+import utils.data
+import utils.dataloader
 
 # DSP based UPDRS severity classifier
 class Feature_ML():
@@ -14,18 +17,19 @@ class Feature_ML():
         if classifier == 'svr':
             self.classifier = SVR(C=1.0, epsilon=0.2)
         elif classifier == 'dt':
-            self.classifier = tree.DecisionTreeClassifier()
+            self.classifier = tree.DecisionTreeClassifier(class_weight='balanced', max_depth=10)
         elif classifier == 'linear_svm':
             self.classifier = LinearSVC(tol=1e-5)
         elif classifier == 'svm':
-            self.classifier = SVC(gamma='auto')
+            self.classifier = SVC(gamma='auto', class_weight='balanced')
         elif classifier == 'mlp':
-            self.classifier = MLPRegressor(random_state=1, max_iter=500)
+            self.classifier = MLPRegressor(random_state=1, max_iter=500, batch_size=16)
         self.clf = classifier
         self.scaler = StandardScaler()
 
-
         self.labeler_idx = 1
+        self.equalize_class_samples = True
+        self.n_selected_features = 20   # 20
 
         self.min_num_peaks = 7
         self.amp_dec_thresh = 0.9
@@ -33,27 +37,37 @@ class Feature_ML():
         self.use_ratio = False
 
     def __call__(self, x,):
-        average_input = np.zeros((x.shape[0], x.shape[1]))
-        for i in range(x.shape[0]):
-            average_input[i,:] = x[i].mean(axis = 1)
+
+        # convert x from numpy to list of numpy
+        if isinstance(x, np.ndarray):
+            x = [x[i] for i in range(x.shape[0])]
+
+        # average_input = np.zeros((x.shape[0], x.shape[1]))
+        average_input = []
+        for i in range(len(x)):
+            # average_input[i,:] = x[i].mean(axis = 1)
+            average_input.append(x[i].mean(axis = 1))
         features_input = self.get_features(average_input)
         features_input = self.scaler.transform(features_input)
 
         features_input = features_input[:, self.selected_features]
         preds = self.classifier.predict(features_input)
-        if self.clf == 'svr' or self.clf == 'mlp':
-            for i in range(len(preds)):
-                if preds[i]<0.5:
-                    preds[i]=0
-                elif preds[i]<1.5:
-                    preds[i]=1
-                elif preds[i]<2.5:
-                    preds[i]=2
-                elif preds[i]<3.5:
-                    preds[i]=3
-                else:
-                    preds[i]=4
 
+        if self.task == 'binclass':
+            preds = (preds > 0.5) * 1
+        else:
+            if self.clf == 'svr' or self.clf == 'mlp':
+                for i in range(len(preds)):
+                    if preds[i]<0.5:
+                        preds[i]=0
+                    elif preds[i]<1.5:
+                        preds[i]=1
+                    elif preds[i]<2.5:
+                        preds[i]=2
+                    elif preds[i]<3.5:
+                        preds[i]=3
+                    else:
+                        preds[i]=4
 
         return preds
 
@@ -112,7 +126,7 @@ class Feature_ML():
         self.effective_average_speed_fatigue = []
         self.total_average_speed_fatigue = []
 
-        for id in range(x.shape[0]):
+        for id in range(len(x)):
 
             if len(self.effective_distance_completed[id])>0:
 
@@ -212,7 +226,7 @@ class Feature_ML():
         4. count num peaks with residuals > hesitation threshold
         '''
         hesitations_scores = []
-        for i in range(x.shape[0]):
+        for i in range(len(x)):
             if len(self.peak_idxs[i]) < self.min_num_peaks:
                 hesitations_score = 0
             else:
@@ -328,18 +342,66 @@ class Feature_ML():
             if n_features>n_selected_feature:
                 break
 
+    def augment_data(self, x_in, y_in):
+        '''
+        Given timeseries samples and labels x,y, apply data augmentations
+        '''
+        if isinstance(x_in, np.ndarray):
+            # randomly apply scaling with 0.5 probability
+            scale_mask = np.random.rand(x_in.shape[0]) > 0.5
+            aug_data = utils.dataloader.scale_rand_np(x_in[scale_mask], y_in[scale_mask])
+
+            x_aug = np.vstack([x_in, aug_data[0]])
+            y_aug = np.vstack([y_in, aug_data[1]])
+            return x_aug, y_aug
+
+        aug_data = []
+        x_aug, y_aug = [], []
+
+        scale_mask = np.random.rand(len(x_in)) > 0.5
+        for i, mask in enumerate(scale_mask):
+            x_aug.append(x_in[i])
+            y_aug.append(y_in[i])
+            # augment data
+            if mask:
+                auged_data = utils.dataloader.scale_rand_np(x_in[i], y_in[i])
+                x_aug.append(auged_data[0])
+                y_aug.append(auged_data[1])
+        
+        # # randomly apply scaling with 0.5 probability
+        # scale_mask = np.random.rand(x_in.shape[0]) > 0.5
+        # aug_data = utils.dataloader.scale_rand_np(x_in[scale_mask], y_in[scale_mask])
+
+        # x_aug = np.vstack([x_in, aug_data[0]])
+        # y_aug = np.vstack([y_in, aug_data[1]])
+        return x_aug, y_aug
+
     def train(self, x, y, x_val=None, y_val=None,):
-        average_input = np.zeros((x.shape[0], x.shape[1]))
-        for i in range(x.shape[0]):
-            average_input[i,:] = x[i].mean(axis = 1)
-        features_input = self.get_features(average_input)
+        # convert x from numpy to list of numpy
+        if isinstance(x, np.ndarray):
+            average_input = np.mean(x, axis=2)  # avg over fingers
+            average_input, y = self.augment_data(average_input, y)
+            features_input = self.get_features(average_input) # get features
+        else:
+            #     x = [x[i] for i in range(x.shape[0])]
+            # Change timeseries to feature vectors
+            # average_input = np.mean(x, axis=2)  # avg over fingers
+            average_input = []
+            # for i in range(len(x)):
+            #     average_input.appenD(x[i].mean(axis = 1))
+            average_input = [x[i].mean(axis = 1) for i in range(len(x))]
+            # average_input, y = self.augment_data(average_input, y)
+            features_input = self.get_features(average_input) # get features
+
+        if self.equalize_class_samples:
+            features_input, y = utils.data.equalize_class_samples(features_input, y)
 
         # normalization
         self.scaler.fit(features_input)
         features_input = self.scaler.transform(features_input)
 
         label = y[:, self.labeler_idx]
-        self.information_gain_feature_selection(features_input, label, n_selected_feature=20)
+        self.information_gain_feature_selection(features_input, label, n_selected_feature=self.n_selected_features)
         features_input = features_input[:, self.selected_features]
         self.classifier = self.classifier.fit(features_input, label)
 

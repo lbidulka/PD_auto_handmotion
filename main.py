@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 # from models.dsp_updrs import UPDRS_DSP
 # from models.simple_mlp import SimpleMLP
-from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml
+from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
 
 import data.timeseries.data_timeseries as data_timeseries
 from utils import evaluation as eval_utils
@@ -15,7 +15,7 @@ from utils import data as data_utils
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
-    parser.add_argument('--datasets', default='PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
+    parser.add_argument('--datasets', default='CAMERA,PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
 
     args = parser.parse_args() 
     return args
@@ -66,34 +66,51 @@ def CA_TCC_eval(args, model,):
     print(f'\n--- {model.name} ---')
     print_metrics(metrics)
 
-def leave_one_out_eval(args, model, data):
+def N_fold_eval(args, model, data):
     '''
-    leave-one-out train/evaluation over all samples. Excluding 1 subjects samples at a time.
+    N_fold train/evaluation over all samples. Excluding N subjects samples for training at a time.
     '''
-    combine_34 = False
-    rej_either = False   # if True, reject samples if any label == -1. If False, reject if all labels == -1
-    unscaled_ts = False  # if True, use unscaled timeseries data
+    combine_34 = True
+    rej_either = True   # if True, reject samples if any label == -1. If False, reject if all labels == -1
+    if model.name == 'feature_ml':
+        unscaled_ts = False
+    else:
+        unscaled_ts = False  # if True, use unscaled timeseries data
+    rej_unlabelled_annot = 1 # if not None, reject samples if this annotator has label == -1
+    binclass_idx = 0    # index to split multiclass into binary classification (ie label > binclass_idx is 1, else 0)
+
+    N = 10  # Number of folds to split dataset into
 
     eval_preds, eval_targets = [], []
     subj_ids = np.unique(data.subj_ids)
-    print(f'Leave-one-out Eval on {len(subj_ids)} subjects:')
-    for subj_id in tqdm(subj_ids):
-        eval_subj_data = data.get_subj_data([subj_id], model.use_ratio, unscaled=unscaled_ts)
-        train_subj_data = data.get_subj_data(subj_ids[subj_ids != subj_id], model.use_ratio, unscaled=unscaled_ts)
-        
-        # remove samples with label == -1
-        train_x, train_y = data_utils.remove_unlabeled(train_subj_data, 
-                                                       combine_34=combine_34, rej_either=rej_either)
-        test_x, test_y = data_utils.remove_unlabeled(eval_subj_data,
-                                                     combine_34=combine_34)
+
+    subj_data = data.get_subj_data(subj_ids, model.use_ratio, unscaled=unscaled_ts)
+    _, _, rej_idxs = data_utils.remove_unlabeled(subj_data, 
+                                                       combine_34=combine_34, rej_either=rej_either, 
+                                                       rej_annot=rej_unlabelled_annot)
+    data.delete_idxs(rej_idxs)
+
+    print(f'{N}-fold Eval on {len(subj_ids)} subjects:')
+    for i in tqdm(range(N)):
+        # Get train and test data
+        num_eval_subjs = len(subj_ids) // N
+        eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
+        eval_subj_data = data.get_subj_data([eval_subjs], model.use_ratio, unscaled=unscaled_ts, combine_34=combine_34)
+        train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], model.use_ratio, unscaled=unscaled_ts, combine_34=combine_34)
+        train_x, train_y = train_subj_data[0], train_subj_data[1]
+        test_x, test_y = eval_subj_data[0], eval_subj_data[1]
 
         # Convert to binary classification if needed
         if args.task == 'binclass':
-            train_y[train_y > 0] = 1.0
-            test_y[test_y > 0] = 1.0
+            train_mask = train_y > binclass_idx
+            train_y[train_mask] = 1.0
+            train_y[~train_mask] = 0.0
+            test_mask = test_y > binclass_idx
+            test_y[test_mask] = 1.0
+            test_y[~test_mask] = 0.0
 
         # Train and evaluate
-        if test_x.shape[0] != 0:
+        if len(test_x) != 0:
             model.init_model()
             model.train(train_x, train_y)
             test_pred = model(test_x)
@@ -124,7 +141,8 @@ def leave_one_out_eval(args, model, data):
         class_cnts = np.mean(class_cnts, axis=0)
 
         # check against random predictor based on train label frequency
-        freq_preds = np.random.choice([0, 1, 2, 3, 4], size=eval_targets.shape[0], 
+        possible_labels = np.unique(eval_targets)
+        freq_preds = np.random.choice(possible_labels, size=eval_targets.shape[0], 
                                      p=class_cnts/np.sum(class_cnts))
         freq_metrics = eval_utils.get_metrics(freq_preds, eval_targets, 
                                               task=args.task)
@@ -134,7 +152,7 @@ def leave_one_out_eval(args, model, data):
 
 if __name__ == '__main__':
     args = parse_args()
-    eval_model = 'feature_ml'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp
+    eval_model = 'feature_ml'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
     classifier='svr' # Classifier to use for feature_ml: svr, svm, rf, dt
 
     # Define model and data
@@ -143,6 +161,9 @@ if __name__ == '__main__':
         model = dsp_updrs.UPDRS_DSP(task=args.task,)
     elif eval_model == 'feature_ml':
         model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
+    elif eval_model == 'feature_mlp':
+        model = feature_mlp.FeatureMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
+                                     task=args.task,)
     elif eval_model == 'simple_mlp':
         model = simple_mlp.SimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
                                      task=args.task,)
@@ -156,7 +177,7 @@ if __name__ == '__main__':
         raise NotImplementedError
 
     # Train/Eval the model
-    leave_one_out_eval(args, model, data)
+    N_fold_eval(args, model, data)
     # CA_TCC_eval(args, model)
 
     

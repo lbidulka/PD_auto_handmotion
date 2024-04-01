@@ -7,7 +7,7 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25
     # find cycle peaks and get avg vals around at peak
     peak_idxs = []
     peak_vals = []
-    for i in range(x.shape[0]):
+    for i in range(len(x)):
 
         if i == 541:
             a=1
@@ -37,12 +37,12 @@ def get_cycle_valleys(x, peak_idxs):
 
     valley_idxs = []
     valley_vals = []
-    for i in range(x.shape[0]):
+    for i in range(len(x)):
         valley_idxs.append([])
         valley_vals.append([])
         peaks = peak_idxs[i]
         for j in range(len(peaks)-1):
-            data = x[i, peaks[j]:peaks[j+1]]
+            data = x[i][peaks[j]:peaks[j+1]]
             data_max = np.max(data)
             data = data_max - data
             data = np.expand_dims(data, 0)
@@ -65,7 +65,7 @@ def adjust_peaks(input, peak_idxs, peak_vals, valley_idxs, valley_vals):
     new_valley_idxs=[]
     new_valley_vals=[]
     valley_width = []
-    for id in range(input.shape[0]):
+    for id in range(len(input)):
         # adjust peak and valley centres, and get width for each peak and valley centers
         new_peak_idxs_sample = np.zeros(np.shape(peak_idxs[id]))
         new_peak_vals_sample = np.zeros(np.shape(peak_idxs[id]))
@@ -151,7 +151,7 @@ def get_cycle_features(x, peak_idxs, peak_vals, valley_vals):
     total_average_speed = []
     smoothness = []
 
-    for id in range(x.shape[0]):
+    for id in range(len(x)):
         effective_distance_completed.append([])
         total_distance_travelled.append([])
         cycle_times.append([])
@@ -243,7 +243,7 @@ def get_hesitations_valleys_th(valley_vals, threshold):
 
 def get_fft_var(x):
     fft_var = []
-    for id in range(x.shape[0]):
+    for id in range(len(x)):
         fft_var.append(np.var(np.fft.fft(x[id])))
     
     return fft_var
@@ -269,10 +269,10 @@ def get_fatigue_minmax(input):
     else:
         return result
     
-def get_catch22_features(input):
+def get_catch22_features(input, catch24=True):
     results = []
-    for i in range(input.shape[0]):
-        result = pycatch22.catch22_all(input[i],catch24=True)
+    for i in range(len(input)):
+        result = pycatch22.catch22_all(input[i], catch24=catch24)
         results.append(result['values'])
     
     return results
