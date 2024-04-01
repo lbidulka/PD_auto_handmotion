@@ -15,7 +15,8 @@ from utils import data as data_utils
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
-    parser.add_argument('--datasets', default='CAMERA,PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
+    parser.add_argument('--datasets', default='CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
+    parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
     args = parser.parse_args() 
     return args
@@ -70,13 +71,15 @@ def N_fold_eval(args, model, data):
     '''
     N_fold train/evaluation over all samples. Excluding N subjects samples for training at a time.
     '''
-    combine_34 = True
-    rej_either = True   # if True, reject samples if any label == -1. If False, reject if all labels == -1
     if model.name == 'feature_ml':
-        unscaled_ts = False
+        data_format = 'scaled'
+        combine_34 = True
     else:
-        unscaled_ts = False  # if True, use unscaled timeseries data
+        data_format = 'scaled'  # 'scaled', 'unscaled', 'unscaled_kpt'
+        combine_34 = False
+
     rej_unlabelled_annot = 1 # if not None, reject samples if this annotator has label == -1
+    rej_either = True   # if True, reject samples if any label == -1. If False, reject if all labels == -1
     binclass_idx = 0    # index to split multiclass into binary classification (ie label > binclass_idx is 1, else 0)
 
     N = 10  # Number of folds to split dataset into
@@ -84,10 +87,10 @@ def N_fold_eval(args, model, data):
     eval_preds, eval_targets = [], []
     subj_ids = np.unique(data.subj_ids)
 
-    subj_data = data.get_subj_data(subj_ids, model.use_ratio, unscaled=unscaled_ts)
+    subj_data = data.get_subj_data(subj_ids, use_ratio=model.use_ratio, format=data_format)
     _, _, rej_idxs = data_utils.remove_unlabeled(subj_data, 
-                                                       combine_34=combine_34, rej_either=rej_either, 
-                                                       rej_annot=rej_unlabelled_annot)
+                                                combine_34=combine_34, rej_either=rej_either, 
+                                                rej_annot=rej_unlabelled_annot)
     data.delete_idxs(rej_idxs)
 
     print(f'{N}-fold Eval on {len(subj_ids)} subjects:')
@@ -95,11 +98,14 @@ def N_fold_eval(args, model, data):
         # Get train and test data
         num_eval_subjs = len(subj_ids) // N
         eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
-        eval_subj_data = data.get_subj_data([eval_subjs], model.use_ratio, unscaled=unscaled_ts, combine_34=combine_34)
-        train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], model.use_ratio, unscaled=unscaled_ts, combine_34=combine_34)
+        eval_subj_data = data.get_subj_data([eval_subjs], format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
+        train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], 
+                                             format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
         train_x, train_y = train_subj_data[0], train_subj_data[1]
         test_x, test_y = eval_subj_data[0], eval_subj_data[1]
 
+        train_x, test_x, train_y, test_y = data_utils.balance_eval_split(train_x, test_x, train_y, test_y,)
+        
         # Convert to binary classification if needed
         if args.task == 'binclass':
             train_mask = train_y > binclass_idx
@@ -126,28 +132,29 @@ def N_fold_eval(args, model, data):
     print(f'\n--- {model.name} ---')
     print_metrics(metrics)
     
-    if args.task == 'binclass':
-        # check against majority class predictor (1)
-        maj_preds = np.ones_like(eval_preds)
-        maj_metrics = eval_utils.get_metrics(maj_preds, eval_targets, 
-                                             task=args.task)
-        print("\n--- Majority Class Predictor (1) ---")
-        print_metrics(maj_metrics)
-    elif args.task == 'multiclass':
-        # get avg class counts
-        class_cnts = []
-        for rater in range(eval_targets.shape[1]):
-            class_cnts.append(np.bincount(eval_targets[:,0].astype(int), minlength=4))                        
-        class_cnts = np.mean(class_cnts, axis=0)
+    if args.rand_baseline:
+        if args.task == 'binclass':
+            # check against majority class predictor (1)
+            maj_preds = np.ones_like(eval_preds)
+            maj_metrics = eval_utils.get_metrics(maj_preds, eval_targets, 
+                                                task=args.task)
+            print("\n--- Majority Class Predictor (1) ---")
+            print_metrics(maj_metrics)
+        elif args.task == 'multiclass':
+            # get avg class counts
+            class_cnts = []
+            for rater in range(eval_targets.shape[1]):
+                class_cnts.append(np.bincount(eval_targets[:,0].astype(int), minlength=4))                        
+            class_cnts = np.mean(class_cnts, axis=0)
 
-        # check against random predictor based on train label frequency
-        possible_labels = np.unique(eval_targets)
-        freq_preds = np.random.choice(possible_labels, size=eval_targets.shape[0], 
-                                     p=class_cnts/np.sum(class_cnts))
-        freq_metrics = eval_utils.get_metrics(freq_preds, eval_targets, 
-                                              task=args.task)
-        print("\n--- Frequency Class Predictor ---")
-        print_metrics(freq_metrics)
+            # check against random predictor based on train label frequency
+            possible_labels = np.unique(eval_targets)
+            freq_preds = np.random.choice(possible_labels, size=eval_targets.shape[0], 
+                                        p=class_cnts/np.sum(class_cnts))
+            freq_metrics = eval_utils.get_metrics(freq_preds, eval_targets, 
+                                                task=args.task)
+            print("\n--- Frequency Class Predictor ---")
+            print_metrics(freq_metrics)
 
 
 if __name__ == '__main__':
@@ -159,11 +166,13 @@ if __name__ == '__main__':
     data = data_timeseries.data_timeseries(args.datasets)
     if eval_model == 'updrs_dsp':
         model = dsp_updrs.UPDRS_DSP(task=args.task,)
+    # FEATURE BASELINES
     elif eval_model == 'feature_ml':
         model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
     elif eval_model == 'feature_mlp':
         model = feature_mlp.FeatureMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
                                      task=args.task,)
+    # NAIVE BASELINES
     elif eval_model == 'simple_mlp':
         model = simple_mlp.SimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
                                      task=args.task,)

@@ -3,7 +3,7 @@ import scipy.signal as signal
 import pycatch22
 
 
-def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25):
+def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25, smooth=True):
     # find cycle peaks and get avg vals around at peak
     peak_idxs = []
     peak_vals = []
@@ -11,7 +11,10 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25
 
         if i == 541:
             a=1
-        smoothed = signal.savgol_filter((x[i]), savgol_win, 3)
+        if smooth:
+            smoothed = signal.savgol_filter((x[i]), savgol_win, 3)
+        else:
+            smoothed = x[i]
         peak_idxs.append(signal.find_peaks(smoothed, height=0.35, distance=min_peak_dist, prominence=prominence)[0])
         # avg val around each peak
         peak_window = 2

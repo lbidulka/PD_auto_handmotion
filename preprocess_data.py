@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from tqdm import tqdm
+import scipy.signal as signal
 
 from data.CAMERA_expert_labels import too_short, trimming
 import utils.features as features
@@ -13,7 +14,7 @@ import utils.data as data
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--dataset', default='PD4T', help='Dataset to process')   # CAMERA, PD4T
-    parser.add_argument('--save_out', default=False, help='Save output to file?')   # True False
+    parser.add_argument('--save_out', default=True, help='Save output to file?')   # True False
 
     args = parser.parse_args() 
     return args
@@ -70,6 +71,16 @@ if __name__ == '__main__':
     # Get raw timeseries data from pose files
     raw_ts, trim_ts, labels, subj_ids, handednesses = data.load_raw_ts(file_list, args, trimming)
     
+    # Simple filtering
+    savgol_win = 5
+    savgol_ord = 3
+    for i, ts in enumerate(trim_ts):
+        # trim_ts[i] = signal.savgol_filter(ts, savgol_win, 3)
+        for dim in range(ts.shape[1]):
+            trim_ts[i][:, dim, 0] = signal.savgol_filter(ts[:, dim, 0], savgol_win, savgol_ord)
+            trim_ts[i][:, dim, 1] = signal.savgol_filter(ts[:, dim, 1], savgol_win, savgol_ord)
+            trim_ts[i][:, dim, 2] = signal.savgol_filter(ts[:, dim, 2], savgol_win, savgol_ord)
+
     # Convert from full hand kpts to 5 channel distance from finger to palm
     finger_dists = features.get_finger_palm_distance(raw_ts)
     finger_dists_trimmed = features.get_finger_palm_distance(trim_ts)
@@ -84,11 +95,14 @@ if __name__ == '__main__':
         AUTO_TRIM_MASK = [subj_id not in trimming.keys() for subj_id in subj_ids]
         # DEBUG_PEAKS = None
     if AUTO_TRIM:
-        finger_dists_trimmed, too_short_mask, DEBUG_PEAKS = data.auto_trim_dist_ts(finger_dists_trimmed, AUTO_TRIM_MASK)
+        finger_dists_trimmed, trim_ts, too_short_mask, DEBUG_PEAKS = data.auto_trim_dist_ts(finger_dists_trimmed, 
+                                                                                              trim_ts,
+                                                                                              AUTO_TRIM_MASK,
+                                                                                              smooth=False)
 
     # Upscale all trimmed samples to same length via interpolation (to length of longest sample)
     # max_seq_len = max([data.shape[0] for data in finger_dists_trimmed])
-    max_seq_len = 824
+    max_seq_len = 1728
     # increase max_seq_len to nearest multiple of 8
     max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
     finger_dists_upscale = []
@@ -178,17 +192,20 @@ if __name__ == '__main__':
         stacked = np.concatenate(array_list, axis=axis)
         return stacked, idx
     finger_dists_stacked, finger_dists_stacked_idx = stack_ragged(finger_dists_trimmed)
+    kpts_stacked, kpts_stacked_idx = stack_ragged(trim_ts)
     
     # Save entire dataset to single file
     if args.save_out:
         out_filepath = os.path.join(out_folder, 'handmotion_all.npz')
         print('\nSaving to file: ', out_filepath)
-        train_data_dict = {'samples_scaled': np.stack(finger_dists_upscale), 
-                        'samples_unscaled': finger_dists_stacked, 
-                        'samples_unscaled_idxs': finger_dists_stacked_idx,
-                        'labels': y, 
-                        'subj_ids': np.array(subj_ids), 
-                        'handednesses': np.array(handednesses),
-                        'upscale_ratios': np.array(upscale_ratios),
-                        }
+        train_data_dict = {
+            'samples_scaled': np.stack(finger_dists_upscale), 
+            'samples_unscaled': finger_dists_stacked, 
+            'samples_kpts_unscaled': kpts_stacked,
+            'samples_unscaled_idxs': finger_dists_stacked_idx,
+            'labels': y, 
+            'subj_ids': np.array(subj_ids), 
+            'handednesses': np.array(handednesses),
+            'upscale_ratios': np.array(upscale_ratios),
+        }
         np.savez(out_filepath, **train_data_dict)

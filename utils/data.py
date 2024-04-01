@@ -2,7 +2,7 @@ import os
 import numpy as np
 from scipy import io
 
-# from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA
+from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA
 from data.PD4T_expert_labels import PD4T_handmotion_df
 import utils.features as features
 
@@ -26,6 +26,57 @@ def equalize_class_samples(x_tensor_in, y_tensor_in, weight_annot_idx=1):
             x_tensor = np.concatenate([x_tensor, x_tensor[y_tensor[:,weight_annot_idx] == t].repeat(repeat, 0)])
             y_tensor = np.concatenate([y_tensor, y_tensor[y_tensor[:,weight_annot_idx] == t].repeat(repeat, 0)])
     return x_tensor, y_tensor
+
+def balance_eval_split(x_train, x_test, y_train, y_test, 
+                       tol=0.2, weight_annot_idx=1):
+    '''
+    Ensure that test split has somewhat balanced classes
+    '''    
+    # ensure at least 1 sample in each class
+    for t in np.unique(y_train):
+        if len(y_test[y_test[:,weight_annot_idx] == t]) == 0:
+            idx = np.where(y_train[:,weight_annot_idx] == t)[0][0]
+            x_test = np.concatenate([x_test, x_train[idx].reshape(1, x_test.shape[1], x_test.shape[2])])
+            y_test = np.concatenate([y_test, y_train[idx].reshape(1, -1)])
+            x_train = np.delete(x_train, idx, axis=0)
+            y_train = np.delete(y_train, idx, axis=0)
+
+    train_class_cnt = np.array(
+        [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])
+    test_class_cnt = np.array(
+        [len(y_test[y_test[:,weight_annot_idx] == t]) for t in np.unique(y_test)])
+
+    # move maj test class samples from test to train, min test class samples from train to test
+    test_class_diff = test_class_cnt.max() - test_class_cnt.min()
+    if test_class_diff > (tol*test_class_cnt.max()):
+        num_test_maj_move = 1
+        num_test_min_move = 1
+
+        maj_class = np.argmax(test_class_cnt)
+        min_class = np.argmin(test_class_cnt)
+        maj_class_idxs = np.where(y_test[:,weight_annot_idx] == maj_class)[0]
+        min_class_idxs = np.where(y_train[:,weight_annot_idx] == min_class)[0]
+
+        # move maj class samples from test to train
+        move_idxs = np.random.choice(maj_class_idxs, num_test_maj_move, replace=False)
+        x_train = np.concatenate([x_train, x_test[move_idxs]])
+        y_train = np.concatenate([y_train, y_test[move_idxs]])
+        x_test = np.delete(x_test, move_idxs, axis=0)
+        y_test = np.delete(y_test, move_idxs, axis=0)
+
+        # move min class samples from train to test
+        move_idxs = np.random.choice(min_class_idxs, num_test_min_move, replace=False)
+        x_test = np.concatenate([x_test, x_train[move_idxs]])
+        y_test = np.concatenate([y_test, y_train[move_idxs]])
+        x_train = np.delete(x_train, move_idxs, axis=0)
+        y_train = np.delete(y_train, move_idxs, axis=0)
+
+    train_class_cnt = np.array(
+        [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])
+    test_class_cnt = np.array(
+        [len(y_test[y_test[:,weight_annot_idx] == t]) for t in np.unique(y_test)])
+
+    return x_train, x_test, y_train, y_test
 
 def remove_unlabeled(subj_data, subj_ids=None, handednesses=None, 
                      combine_34=True, rej_either=True, rej_annot=None):
@@ -207,21 +258,23 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
     #         if label_SA is None:
     #             label_SA = -1
 
-def auto_trim_dist_ts(dist_ts, trim_mask, num_cycles=10, num_passes=1,):
+def auto_trim_dist_ts(dist_ts, kpts_ts, trim_mask, num_cycles=10, num_passes=1, smooth=True):
     '''
     Automatically trim the fingertip-palm distance timeseries to the desired number
     of action cycles
     '''
     too_short_mask = [False for ts in dist_ts]
-    ts_trims = [ts for ts in dist_ts]
+    dist_ts_trims = [ts for ts in dist_ts]
+    kpts_ts_trims = [ts for ts in kpts_ts]
     peaks = [[] for ts in dist_ts]
     for i in range(num_passes):
-        for j, ts in enumerate(ts_trims):
+        for j, ts in enumerate(dist_ts_trims):
             # Only trim if mask is true
             if trim_mask[j]:
                 # check number of peaks
-                peak_idxs, peaks_vals = features.get_cycle_peaks(np.array([ts]), min_peak_dist=None, 
-                                                                keep_10=False, savgol_win=5, prominence=0.15)
+                peak_idxs, peaks_vals = features.get_cycle_peaks(np.array([ts.mean(1)]), min_peak_dist=None, 
+                                                                keep=10, savgol_win=5, 
+                                                                prominence=0.15, smooth=smooth)
                 peak_idxs = peak_idxs[0]
                 peaks_vals = peaks_vals[0]
                 start_idx = 0
@@ -229,26 +282,19 @@ def auto_trim_dist_ts(dist_ts, trim_mask, num_cycles=10, num_passes=1,):
                 # Too short?
                 if len(peak_idxs) < num_cycles:
                     too_short_mask[j] = True
-                    ts_trims[j] = ts[:25]
+                    start_idx = 0
+                    end_idx = 25
                 else:
                     too_short_mask[j] = False
                     # Too long?
                     if len(peak_idxs) != num_cycles:
-                        # trim end to end at trough after last peak
+                        # trim end to end at trough after last peak, trim start to num_cycles cycles before end
                         end_idx = int(peak_idxs[-1] + np.diff(peak_idxs[-3:-1]).mean() / 2)
-                        # trim start to num_cycles cycles before end
                         start_idx = int(peak_idxs[-num_cycles] -np.diff(peak_idxs[-num_cycles:-num_cycles+3]).mean() / 2)
-                        
-                        # trim start to start at trough before first peak
-                        # start_idx = int(peak_idxs[0] - np.diff(peak_idxs[:3]).mean() / 2)
-                        # start_idx = max(0, start_idx)
-                        # end_idx = int(peak_idxs[num_cycles-1] + np.diff(peak_idxs[num_cycles-3:num_cycles-1]).mean() / 2)
 
-                    # trim
-                    ts_trims[j] = ts[start_idx:end_idx]
-                    # ts_trims[j] = ts
+                # trim kpt and dist series
+                dist_ts_trims[j] = ts[start_idx:end_idx]
+                kpts_ts_trims[j] = kpts_ts[j][start_idx:end_idx]
                 peaks[j] = [peak_idxs - start_idx, peaks_vals]
-                
-    # DEBUG: trim the too short series to only 2 samples
-    # ts_trims = [ts[:2] for ts, too_short in zip(ts_trims, too_short_mask) if too_short]  
-    return ts_trims, too_short_mask, peaks
+
+    return dist_ts_trims, kpts_ts_trims, too_short_mask, peaks

@@ -31,7 +31,7 @@ class data_timeseries():
     def load_dataset_files(self, datasets):
         '''
         '''
-        x, x_unscaled, y, subj_ids, handednesses, upscale_ratios = [], [], [], [], [], []
+        x, x_unscaled, x_kpts, y, subj_ids, handednesses, upscale_ratios = [], [], [], [], [], [], []
         self.data = []
         for dataset in datasets:
             file_path = f'data/{dataset}/timeseries/{self.action}_all.npz'
@@ -42,7 +42,10 @@ class data_timeseries():
             x_unscaled.append(np.split(self.data[-1]['samples_unscaled'], 
                                        self.data[-1]['samples_unscaled_idxs'], 
                                        axis=0))
-            
+            # x_kpts.append(self.data[-1]['samples_kpts_unscaled'])
+            x_kpts.append(np.split(self.data[-1]['samples_kpts_unscaled'], 
+                                       self.data[-1]['samples_unscaled_idxs'], 
+                                       axis=0))
             labels = self.data[-1]['labels']
             if dataset == 'PD4T':
                 # repeat labels to emulate multiple raters
@@ -55,20 +58,11 @@ class data_timeseries():
             
         self.x = np.vstack(x)
         self.x_unscaled = [ts for ts_list in x_unscaled for ts in ts_list]
+        self.x_kpts = [ts for ts_list in x_kpts for ts in ts_list]
         self.y = np.vstack(y)
         self.subj_ids = np.hstack(subj_ids)
         self.handednesses = np.hstack(handednesses)
         self.upscale_ratios = np.hstack(upscale_ratios)
-            
-        # self.data = np.load(file_path)
-        # self.x = self.data['samples_scaled']
-        # self.x_unscaled = np.split(self.data['samples_unscaled'], 
-        #                            self.data['samples_unscaled_idxs'], 
-        #                            axis=0)
-        # self.y = self.data['labels']
-        # self.subj_ids = self.data['subj_ids']
-        # self.handednesses = self.data['handednesses']
-        # self.upscale_ratios = self.data['upscale_ratios']
         return 
     
     def delete_idxs(self, idxs):
@@ -77,26 +71,32 @@ class data_timeseries():
         '''
         self.x = np.delete(self.x, idxs, axis=0)
         self.x_unscaled = [ts for i, ts in enumerate(self.x_unscaled) if i not in idxs]
+        self.x_kpts = [ts for i, ts in enumerate(self.x_kpts) if i not in idxs]
         self.y = np.delete(self.y, idxs, axis=0)
         self.subj_ids = np.delete(self.subj_ids, idxs, axis=0)
         self.handednesses = np.delete(self.handednesses, idxs, axis=0)
         self.upscale_ratios = np.delete(self.upscale_ratios, idxs, axis=0)
     
-    def get_subj_data(self, subj_ids, use_ratio=False, unscaled=False, combine_34=False):
+    def get_subj_data(self, subj_ids, format='scaled',
+                      use_ratio=False, combine_34=False):
         '''
-        Get all samples for specified list of subjects
+        Get all samples for specified list of subjects, in specified data format
         '''
         subj_idxs = np.where(np.isin(self.subj_ids, subj_ids))[0]
         out_y = self.y[subj_idxs]
         if combine_34: out_y[out_y == 4] = 3
-        if unscaled:
-            out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
-        else:
+
+        if format == 'scaled':
             out_x = self.x[subj_idxs]
             if use_ratio:
                 subj_upscale_ratios = self.upscale_ratios[subj_idxs]
                 out_x = np.append(out_x, 
                                 np.repeat(subj_upscale_ratios.reshape(-1,1,1), 4, axis=2), 
                                 axis=1)
+        elif format == 'unscaled':
+            out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
+        elif format == 'unscaled_kpt':
+            out_x = [ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
+        
         return [out_x, out_y]
     
