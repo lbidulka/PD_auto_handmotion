@@ -42,7 +42,6 @@ class data_timeseries():
             x_unscaled.append(np.split(self.data[-1]['samples_unscaled'], 
                                        self.data[-1]['samples_unscaled_idxs'], 
                                        axis=0))
-            # x_kpts.append(self.data[-1]['samples_kpts_unscaled'])
             x_kpts.append(np.split(self.data[-1]['samples_kpts_unscaled'], 
                                        self.data[-1]['samples_unscaled_idxs'], 
                                        axis=0))
@@ -59,6 +58,15 @@ class data_timeseries():
         self.x = np.vstack(x)
         self.x_unscaled = [ts for ts_list in x_unscaled for ts in ts_list]
         self.x_kpts = [ts for ts_list in x_kpts for ts in ts_list]
+
+        # convert x_kpts to np array by padding with (-999, -999, -999)
+        max_len = max([ts.shape[0] for ts in self.x_kpts])
+        x_kpts_pad = np.zeros((len(self.x_kpts), max_len+1, self.x_kpts[0].shape[1], 3))
+        for i, ts in enumerate(self.x_kpts):
+            x_kpts_pad[i, :ts.shape[0]] = ts
+            x_kpts_pad[i, ts.shape[0]:] = ts.shape[0]
+
+        self.x_kpts = x_kpts_pad
         self.y = np.vstack(y)
         self.subj_ids = np.hstack(subj_ids)
         self.handednesses = np.hstack(handednesses)
@@ -71,7 +79,7 @@ class data_timeseries():
         '''
         self.x = np.delete(self.x, idxs, axis=0)
         self.x_unscaled = [ts for i, ts in enumerate(self.x_unscaled) if i not in idxs]
-        self.x_kpts = [ts for i, ts in enumerate(self.x_kpts) if i not in idxs]
+        self.x_kpts = np.delete(self.x_kpts, idxs, axis=0) #[ts for i, ts in enumerate(self.x_kpts) if i not in idxs]
         self.y = np.delete(self.y, idxs, axis=0)
         self.subj_ids = np.delete(self.subj_ids, idxs, axis=0)
         self.handednesses = np.delete(self.handednesses, idxs, axis=0)
@@ -96,7 +104,10 @@ class data_timeseries():
         elif format == 'unscaled':
             out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
         elif format == 'unscaled_kpt':
-            out_x = [ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
+            out_x = self.x_kpts[subj_idxs] #[ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
         
-        return [out_x, out_y]
+        out_ids = self.subj_ids[subj_idxs]
+        out_ids = np.array([int(id) for id in out_ids])
+
+        return [out_x, out_y, out_ids]
     

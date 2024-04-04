@@ -35,10 +35,10 @@ def scale_rand_np(x, y):
     return x * np.random.uniform(0.95, 1.0), y
 
 def noise_rand(x, y):
-    return x + torch.empty(x.shape).normal_(0, 0.05), y
+    return x + torch.empty(x.shape).normal_(0, 0.02), y
 
 def noise_rand_np(x, y):
-    return x + np.random.normal(0, 0.05, x.shape), y
+    return x + np.random.normal(0, 0.02, x.shape), y
 
 # UPDRS transforms
 def amp_decrement(x, y):

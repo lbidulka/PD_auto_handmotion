@@ -1,11 +1,13 @@
 import argparse
 import os
+import random
 import numpy as np
+import torch
 from tqdm import tqdm
+import wandb
+import types
 
-# from models.dsp_updrs import UPDRS_DSP
-# from models.simple_mlp import SimpleMLP
-from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
+from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp, ddnet
 
 import data.timeseries.data_timeseries as data_timeseries
 from utils import evaluation as eval_utils
@@ -17,6 +19,8 @@ def parse_args():
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
     parser.add_argument('--datasets', default='CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
+
+    parser.add_argument('--wblog', default=True, help='Log to wandb?')   # True False
 
     args = parser.parse_args() 
     return args
@@ -31,6 +35,45 @@ def print_metrics(metrics):
             else:
                 print(f'    {metric}: {value:.3f}')
         print('')
+
+def set_seed(args):
+    '''
+    Set random seed
+    '''
+    if not hasattr(args, 'seed'):
+        seed = random.randint(0, 1000000)
+        args.seed = seed
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    # if args.wblog:
+    #     wandb.config.seed = seed
+    return 
+
+def init_logger(args, model):
+    '''
+    Initialize wandb logger if desired
+    '''
+    if args.wblog:
+        config = {
+            'seed': args.seed,
+            'datasets': args.datasets,
+            'model': model.name,
+        }
+        if model.name == 'ddnet':
+            config['m_lr'] = model.lr
+            config['m_epochs'] = model.num_epochs
+            config['m_loss_type'] = model.loss_type
+            if model.loss_type == 'Focal':
+                config['m_focal_gamma'] = model.focal_gamma
+
+            config['m_frame_l'] = model.frame_l
+            config['m_filters'] = model.filters
+
+        if model.scheduler_type is not None:
+            config['m_scheduler_type'] = model.scheduler_type
+
+        wandb.init(project='auto-UPDRS', config=config)
 
 def CA_TCC_eval(args, model,):
     '''
@@ -74,6 +117,9 @@ def N_fold_eval(args, model, data):
     if model.name == 'feature_ml':
         data_format = 'scaled'
         combine_34 = True
+    elif model.name == 'ddnet':
+        data_format = 'unscaled_kpt'
+        combine_34 = True
     else:
         data_format = 'scaled'  # 'scaled', 'unscaled', 'unscaled_kpt'
         combine_34 = False
@@ -82,16 +128,17 @@ def N_fold_eval(args, model, data):
     rej_either = True   # if True, reject samples if any label == -1. If False, reject if all labels == -1
     binclass_idx = 0    # index to split multiclass into binary classification (ie label > binclass_idx is 1, else 0)
 
-    N = 10  # Number of folds to split dataset into
+    N = 5  # Number of folds to split dataset into
 
     eval_preds, eval_targets = [], []
     subj_ids = np.unique(data.subj_ids)
 
     subj_data = data.get_subj_data(subj_ids, use_ratio=model.use_ratio, format=data_format)
-    _, _, rej_idxs = data_utils.remove_unlabeled(subj_data, 
+    _, _, _, rej_idxs = data_utils.remove_unlabeled(subj_data, 
                                                 combine_34=combine_34, rej_either=rej_either, 
                                                 rej_annot=rej_unlabelled_annot)
     data.delete_idxs(rej_idxs)
+    subj_ids = np.random.permutation(subj_ids)
 
     print(f'{N}-fold Eval on {len(subj_ids)} subjects:')
     for i in tqdm(range(N)):
@@ -101,11 +148,13 @@ def N_fold_eval(args, model, data):
         eval_subj_data = data.get_subj_data([eval_subjs], format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
         train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], 
                                              format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
-        train_x, train_y = train_subj_data[0], train_subj_data[1]
-        test_x, test_y = eval_subj_data[0], eval_subj_data[1]
+        train_x, train_y, train_subj_ids = train_subj_data[0], train_subj_data[1], train_subj_data[2]
+        test_x, test_y, test_subj_ids = eval_subj_data[0], eval_subj_data[1], eval_subj_data[2]
 
-        train_x, test_x, train_y, test_y = data_utils.balance_eval_split(train_x, test_x, train_y, test_y,)
-        
+        # train_x, test_x, train_y, test_y, train_subj_ids, test_subj_ids = data_utils.balance_eval_split(train_x, test_x, 
+        #                                                                                                 train_y, test_y,
+        #                                                                                                 train_subj_ids, test_subj_ids,)
+
         # Convert to binary classification if needed
         if args.task == 'binclass':
             train_mask = train_y > binclass_idx
@@ -118,8 +167,12 @@ def N_fold_eval(args, model, data):
         # Train and evaluate
         if len(test_x) != 0:
             model.init_model()
-            model.train(train_x, train_y)
+            model.train(train_x, train_y, train_subj_ids=train_subj_ids)
             test_pred = model(test_x)
+
+            print(f'Fold {i+1}: ')
+            metrics = eval_utils.get_metrics(test_pred.numpy(), test_y, task=args.task)
+            print_metrics(metrics)
 
             eval_preds.append(test_pred.reshape(-1))
             eval_targets.append(test_y)
@@ -129,6 +182,15 @@ def N_fold_eval(args, model, data):
     metrics = eval_utils.get_metrics(eval_preds, eval_targets, 
                                      task=args.task)
     
+    wandb_annot_idx = 1
+    wandb.log({
+        'T_acc': metrics[wandb_annot_idx]['acc'],
+        'T_acc_t2': metrics[wandb_annot_idx]['acc_t2'],
+        'T_precision': metrics[wandb_annot_idx]['precision'],
+        'T_recall': metrics[wandb_annot_idx]['recall'],
+        'T_f1': metrics[wandb_annot_idx]['f1'],
+        'T_conf_mat': metrics[wandb_annot_idx]['conf_mat'],
+    })
     print(f'\n--- {model.name} ---')
     print_metrics(metrics)
     
@@ -159,13 +221,19 @@ def N_fold_eval(args, model, data):
 
 if __name__ == '__main__':
     args = parse_args()
-    eval_model = 'feature_ml'   # updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
+    set_seed(args)
+    # convert args to simple namespace
+    # args = types.SimpleNamespace(**vars(args))
+
+    eval_model = 'ddnet'   # updrs_dsp, ddnet, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
     classifier='svr' # Classifier to use for feature_ml: svr, svm, rf, dt
 
     # Define model and data
     data = data_timeseries.data_timeseries(args.datasets)
     if eval_model == 'updrs_dsp':
         model = dsp_updrs.UPDRS_DSP(task=args.task,)
+    elif eval_model == 'ddnet':
+        model = ddnet.DDNet(task=args.task,)
     # FEATURE BASELINES
     elif eval_model == 'feature_ml':
         model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
@@ -185,8 +253,12 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
+    init_logger(args, model)
+
     # Train/Eval the model
     N_fold_eval(args, model, data)
     # CA_TCC_eval(args, model)
+
+    wandb.finish()
 
     

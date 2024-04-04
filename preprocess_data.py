@@ -13,7 +13,7 @@ import utils.data as data
 
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
-    parser.add_argument('--dataset', default='PD4T', help='Dataset to process')   # CAMERA, PD4T
+    parser.add_argument('--dataset', default='CAMERA', help='Dataset to process')   # CAMERA, PD4T
     parser.add_argument('--save_out', default=True, help='Save output to file?')   # True False
 
     args = parser.parse_args() 
@@ -99,6 +99,8 @@ if __name__ == '__main__':
                                                                                               trim_ts,
                                                                                               AUTO_TRIM_MASK,
                                                                                               smooth=False)
+    else:
+        too_short_mask = [False for i in range(len(subj_ids))]
 
     # Upscale all trimmed samples to same length via interpolation (to length of longest sample)
     # max_seq_len = max([data.shape[0] for data in finger_dists_trimmed])
@@ -137,24 +139,16 @@ if __name__ == '__main__':
     # exclude samples which are too short
     for i, data in enumerate(finger_dists_upscale):
         if (subj_ids[i] in too_short.keys()) and (handednesses[i] in too_short[subj_ids[i]]):
-            trim_ts.pop(i)
-            finger_dists_upscale.pop(i)
-            finger_dists_trimmed.pop(i)
-            subj_ids.pop(i)
-            handednesses.pop(i)
-            upscale_ratios.pop(i)
-            y = np.delete(y, i, axis=0)
-    # Autotrim remove samples which are too short
-    if AUTO_TRIM:
-        for i, data in enumerate(finger_dists_trimmed):
-            if too_short_mask[i]:
-                trim_ts.pop(i)
-                finger_dists_upscale.pop(i)
-                finger_dists_trimmed.pop(i)
-                subj_ids.pop(i)
-                handednesses.pop(i)
-                upscale_ratios.pop(i)
-                y = np.delete(y, i, axis=0)
+            too_short_mask[i] = True
+
+    trim_ts = [trim_ts[i] for i in range(len(trim_ts)) if not too_short_mask[i]]
+    finger_dists_upscale = [finger_dists_upscale[i] for i in range(len(finger_dists_upscale)) if not too_short_mask[i]]
+    finger_dists_trimmed = [finger_dists_trimmed[i] for i in range(len(finger_dists_trimmed)) if not too_short_mask[i]]
+    subj_ids = [subj_ids[i] for i in range(len(subj_ids)) if not too_short_mask[i]]
+    handednesses = [handednesses[i] for i in range(len(handednesses)) if not too_short_mask[i]]
+    upscale_ratios = [upscale_ratios[i] for i in range(len(upscale_ratios)) if not too_short_mask[i]]
+    y = y[~np.array(too_short_mask)]
+
     # Remove samples which have bad position w.r.t. the camera
     FILTER_ANGLE = 2.0
     FILTER_ANGLE_FRAC = 0.25

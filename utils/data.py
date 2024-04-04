@@ -27,7 +27,27 @@ def equalize_class_samples(x_tensor_in, y_tensor_in, weight_annot_idx=1):
             y_tensor = np.concatenate([y_tensor, y_tensor[y_tensor[:,weight_annot_idx] == t].repeat(repeat, 0)])
     return x_tensor, y_tensor
 
+def move_subj_samples(subjs, source, dest):
+    '''
+    Move all [subj] samples from source [x,y,subj_ids] to dest [x,y,subj_ids]
+    '''
+    for subj in subjs:
+        subj_idxs = np.where(source[2] == subj)[0]
+        x_subj = source[0][subj_idxs]
+        y_subj = source[1][subj_idxs]
+        subj_ids_subj = source[2][subj_idxs]
+
+        x_dest = np.concatenate([dest[0], x_subj])
+        y_dest = np.concatenate([dest[1], y_subj])
+        subj_ids_dest = np.concatenate([dest[2], subj_ids_subj])
+        x_source = np.delete(source[0], subj_idxs, axis=0)
+        y_source = np.delete(source[1], subj_idxs, axis=0)
+        subj_ids_source = np.delete(source[2], subj_idxs, axis=0)
+
+    return x_source, y_source, subj_ids_source, x_dest, y_dest, subj_ids_dest
+
 def balance_eval_split(x_train, x_test, y_train, y_test, 
+                       subj_ids_train, subj_ids_test,
                        tol=0.2, weight_annot_idx=1):
     '''
     Ensure that test split has somewhat balanced classes
@@ -35,11 +55,11 @@ def balance_eval_split(x_train, x_test, y_train, y_test,
     # ensure at least 1 sample in each class
     for t in np.unique(y_train):
         if len(y_test[y_test[:,weight_annot_idx] == t]) == 0:
-            idx = np.where(y_train[:,weight_annot_idx] == t)[0][0]
-            x_test = np.concatenate([x_test, x_train[idx].reshape(1, x_test.shape[1], x_test.shape[2])])
-            y_test = np.concatenate([y_test, y_train[idx].reshape(1, -1)])
-            x_train = np.delete(x_train, idx, axis=0)
-            y_train = np.delete(y_train, idx, axis=0)
+            move_idx = np.where(y_train[:,weight_annot_idx] == t)[0][0]
+            move_subj = subj_ids_train[move_idx]
+            x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples([move_subj], 
+                                                                                                [x_train, y_train, subj_ids_train], 
+                                                                                                [x_test, y_test, subj_ids_test])
 
     train_class_cnt = np.array(
         [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])
@@ -56,34 +76,48 @@ def balance_eval_split(x_train, x_test, y_train, y_test,
         min_class = np.argmin(test_class_cnt)
         maj_class_idxs = np.where(y_test[:,weight_annot_idx] == maj_class)[0]
         min_class_idxs = np.where(y_train[:,weight_annot_idx] == min_class)[0]
+        maj_class_ids = subj_ids_test[maj_class_idxs]
+        min_class_ids = subj_ids_train[min_class_idxs]
 
         # move maj class samples from test to train
-        move_idxs = np.random.choice(maj_class_idxs, num_test_maj_move, replace=False)
-        x_train = np.concatenate([x_train, x_test[move_idxs]])
-        y_train = np.concatenate([y_train, y_test[move_idxs]])
-        x_test = np.delete(x_test, move_idxs, axis=0)
-        y_test = np.delete(y_test, move_idxs, axis=0)
+        x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples(maj_class_ids, 
+                                                                                            [x_train, y_train, subj_ids_train], 
+                                                                                            [x_test, y_test, subj_ids_test])
+        # move_idxs = np.random.choice(maj_class_idxs, num_test_maj_move, replace=False)
+        # x_train = np.concatenate([x_train, x_test[move_idxs]])
+        # y_train = np.concatenate([y_train, y_test[move_idxs]])
+        # subj_ids_train = np.concatenate([subj_ids_train, subj_ids_test[move_idxs]])
+        # x_test = np.delete(x_test, move_idxs, axis=0)
+        # y_test = np.delete(y_test, move_idxs, axis=0)
+        # subj_ids_test = np.delete(subj_ids_test, move_idxs, axis=0)
 
         # move min class samples from train to test
-        move_idxs = np.random.choice(min_class_idxs, num_test_min_move, replace=False)
-        x_test = np.concatenate([x_test, x_train[move_idxs]])
-        y_test = np.concatenate([y_test, y_train[move_idxs]])
-        x_train = np.delete(x_train, move_idxs, axis=0)
-        y_train = np.delete(y_train, move_idxs, axis=0)
+        x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples(min_class_ids, 
+                                                                                            [x_train, y_train, subj_ids_train], 
+                                                                                            [x_test, y_test, subj_ids_test])
+        # move_idxs = np.random.choice(min_class_idxs, num_test_min_move, replace=False)
+        # x_test = np.concatenate([x_test, x_train[move_idxs]])
+        # y_test = np.concatenate([y_test, y_train[move_idxs]])
+        # subj_ids_test = np.concatenate([subj_ids_test, subj_ids_train[move_idxs]])
+        # x_train = np.delete(x_train, move_idxs, axis=0)
+        # y_train = np.delete(y_train, move_idxs, axis=0)
+        # subj_ids_train = np.delete(subj_ids_train, move_idxs, axis=0)
 
     train_class_cnt = np.array(
         [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])
     test_class_cnt = np.array(
         [len(y_test[y_test[:,weight_annot_idx] == t]) for t in np.unique(y_test)])
 
-    return x_train, x_test, y_train, y_test
+    return x_train, x_test, y_train, y_test, subj_ids_train, subj_ids_test
 
-def remove_unlabeled(subj_data, subj_ids=None, handednesses=None, 
+def remove_unlabeled(subj_data, handednesses=None, 
                      combine_34=True, rej_either=True, rej_annot=None):
     '''
     Remove samples with label == -1
     '''
     x, y = subj_data[0], subj_data[1]
+    if len(subj_data) > 2:
+        subj_ids = subj_data[2]
     # y is a list of lists, and we want to rej any entry which contains a -1
     rej_idxs = []
     for i, labels in enumerate(y):
@@ -106,8 +140,9 @@ def remove_unlabeled(subj_data, subj_ids=None, handednesses=None,
 
     if subj_ids is None:
         return x_out, y_out, rej_idxs
-    
     subj_ids_out = np.delete(subj_ids, rej_idxs, axis=0)
+    if handednesses is None:
+        return x_out, y_out, subj_ids, rej_idxs
     handednesses_out = np.delete(handednesses, rej_idxs, axis=0)
     return x_out, y_out, subj_ids_out, handednesses_out, rej_idxs
 
