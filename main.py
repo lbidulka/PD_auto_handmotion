@@ -17,10 +17,14 @@ from utils import data as data_utils
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
-    parser.add_argument('--datasets', default='CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
+    parser.add_argument('--datasets', default='CAMERA,PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
     parser.add_argument('--wblog', default=True, help='Log to wandb?')   # True False
+    parser.add_argument('--num_trials', default=1, help='Number of trials to run')   # 1, 5, 10
+    parser.add_argument('--num_folds', default=5, help='Number of folds for N-fold evaluation')   # 5, 10
+
+    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -112,7 +116,7 @@ def CA_TCC_eval(args, model,):
 
 def N_fold_eval(args, model, data):
     '''
-    N_fold train/evaluation over all samples. Excluding N subjects samples for training at a time.
+    N_fold train/evaluation over all samples. Excluding a few subjects for testing each time.
     '''
     if model.name == 'feature_ml':
         data_format = 'scaled'
@@ -128,32 +132,32 @@ def N_fold_eval(args, model, data):
     rej_either = True   # if True, reject samples if any label == -1. If False, reject if all labels == -1
     binclass_idx = 0    # index to split multiclass into binary classification (ie label > binclass_idx is 1, else 0)
 
-    N = 5  # Number of folds to split dataset into
-
-    eval_preds, eval_targets = [], []
     subj_ids = np.unique(data.subj_ids)
-
     subj_data = data.get_subj_data(subj_ids, use_ratio=model.use_ratio, format=data_format)
     _, _, _, rej_idxs = data_utils.remove_unlabeled(subj_data, 
-                                                combine_34=combine_34, rej_either=rej_either, 
-                                                rej_annot=rej_unlabelled_annot)
+                                                    combine_34=combine_34, rej_either=rej_either, 
+                                                    rej_annot=rej_unlabelled_annot)
     data.delete_idxs(rej_idxs)
-    subj_ids = np.random.permutation(subj_ids)
 
-    print(f'{N}-fold Eval on {len(subj_ids)} subjects:')
-    for i in tqdm(range(N)):
-        # Get train and test data
-        num_eval_subjs = len(subj_ids) // N
-        eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
+    subj_ids = np.unique(data.subj_ids)
+    subj_ids = np.random.permutation(subj_ids)
+    eval_folds, eval_fold_dists = data_utils.make_subj_folds(subj_ids, args.num_folds, data, 
+                                                             args.datasets, 
+                                                             data_format, model.use_ratio, combine_34)
+    if args.wblog:
+        wandb.log({'fold_dists': eval_fold_dists}, commit=False)
+
+    
+    # Run that sucker
+    print(f'\n{args.num_folds}-fold Eval on {len(subj_ids)} subjects:')
+    eval_preds, eval_targets = [], []
+    for i in tqdm(range(args.num_folds)):
+        eval_subjs = eval_folds[i]
         eval_subj_data = data.get_subj_data([eval_subjs], format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
         train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], 
                                              format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
         train_x, train_y, train_subj_ids = train_subj_data[0], train_subj_data[1], train_subj_data[2]
         test_x, test_y, test_subj_ids = eval_subj_data[0], eval_subj_data[1], eval_subj_data[2]
-
-        # train_x, test_x, train_y, test_y, train_subj_ids, test_subj_ids = data_utils.balance_eval_split(train_x, test_x, 
-        #                                                                                                 train_y, test_y,
-        #                                                                                                 train_subj_ids, test_subj_ids,)
 
         # Convert to binary classification if needed
         if args.task == 'binclass':
@@ -168,10 +172,10 @@ def N_fold_eval(args, model, data):
         if len(test_x) != 0:
             model.init_model()
             model.train(train_x, train_y, train_subj_ids=train_subj_ids)
-            test_pred = model(test_x)
+            test_pred = model(test_x).cpu().numpy()
 
             print(f'Fold {i+1}: ')
-            metrics = eval_utils.get_metrics(test_pred.numpy(), test_y, task=args.task)
+            metrics = eval_utils.get_metrics(test_pred, test_y, task=args.task)
             print_metrics(metrics)
 
             eval_preds.append(test_pred.reshape(-1))
@@ -221,44 +225,44 @@ def N_fold_eval(args, model, data):
 
 if __name__ == '__main__':
     args = parse_args()
-    set_seed(args)
-    # convert args to simple namespace
-    # args = types.SimpleNamespace(**vars(args))
+    for i in tqdm(range(args.num_trials)):
+        print(f'\n--- Trial {i+1} / {args.num_trials}---')
+        set_seed(args)
 
-    eval_model = 'ddnet'   # updrs_dsp, ddnet, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
-    classifier='svr' # Classifier to use for feature_ml: svr, svm, rf, dt
+        eval_model = 'ddnet'   # updrs_dsp, ddnet, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
+        classifier='svr' # Classifier to use for feature_ml: svr, svm, rf, dt
 
-    # Define model and data
-    data = data_timeseries.data_timeseries(args.datasets)
-    if eval_model == 'updrs_dsp':
-        model = dsp_updrs.UPDRS_DSP(task=args.task,)
-    elif eval_model == 'ddnet':
-        model = ddnet.DDNet(task=args.task,)
-    # FEATURE BASELINES
-    elif eval_model == 'feature_ml':
-        model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
-    elif eval_model == 'feature_mlp':
-        model = feature_mlp.FeatureMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
-                                     task=args.task,)
-    # NAIVE BASELINES
-    elif eval_model == 'simple_mlp':
-        model = simple_mlp.SimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
-                                     task=args.task,)
-    elif eval_model == 'ratio_mlp':
-        model = ratio_mlp.RatioSimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
-                                     task=args.task,)
-    elif eval_model == 'simple_cnn':
-        model = simple_cnn.SimpleCNN(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
-                                    task=args.task,)
-    else:
-        raise NotImplementedError
+        # Define model and data
+        data = data_timeseries.data_timeseries(args.datasets)
+        if eval_model == 'updrs_dsp':
+            model = dsp_updrs.UPDRS_DSP(task=args.task,)
+        elif eval_model == 'ddnet':
+            model = ddnet.DDNet(task=args.task, datasets=args.datasets, device=args.device)
+        # FEATURE BASELINES
+        elif eval_model == 'feature_ml':
+            model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
+        elif eval_model == 'feature_mlp':
+            model = feature_mlp.FeatureMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
+                                        task=args.task,)
+        # NAIVE BASELINES
+        elif eval_model == 'simple_mlp':
+            model = simple_mlp.SimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
+                                        task=args.task,)
+        elif eval_model == 'ratio_mlp':
+            model = ratio_mlp.RatioSimpleMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
+                                        task=args.task,)
+        elif eval_model == 'simple_cnn':
+            model = simple_cnn.SimpleCNN(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
+                                        task=args.task,)
+        else:
+            raise NotImplementedError
 
-    init_logger(args, model)
+        init_logger(args, model)
 
-    # Train/Eval the model
-    N_fold_eval(args, model, data)
-    # CA_TCC_eval(args, model)
+        # Train/Eval the model
+        N_fold_eval(args, model, data)
+        # CA_TCC_eval(args, model)
 
-    wandb.finish()
+        wandb.finish()
 
     

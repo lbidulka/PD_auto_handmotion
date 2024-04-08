@@ -7,6 +7,92 @@ from data.PD4T_expert_labels import PD4T_handmotion_df
 import utils.features as features
 
 
+def make_subj_folds(subj_ids, N, data,
+                    datasets,
+                    data_format, use_ratio, combine_34,
+                    annot_id=1):
+    '''
+    Splits the subj ids into N folds, ensureing that each fold has a relatively 
+    balanced label distribution
+    '''
+    eval_folds = []
+    eval_fold_labels = []
+    eval_fold_dists = []
+    for i in range(N):
+        num_eval_subjs = len(subj_ids) // N
+        eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
+        
+        # For each fold of subj id's, we should check the label distribution
+        # to ensure that the distribution is similar across all folds
+        fold_data = data.get_subj_data(eval_subjs, format=data_format, use_ratio=use_ratio, combine_34=combine_34)
+        fold_labels = fold_data[1][:, annot_id]
+        label_dist = np.bincount(fold_labels.flatten().astype(int), minlength=4)        
+        eval_folds.append(eval_subjs)
+        eval_fold_labels.append(fold_labels)
+        eval_fold_dists.append(label_dist)
+    total_dist = np.sum(eval_fold_dists, axis=0)
+
+    # TEMP: randomly reshuffle until distribution is roughly balanced
+    print('Shuffling fold subjs until balanced label distribution is *roughly* achieved...')
+    if datasets == 'CAMERA':
+        off_avg_tol = [2, 2, 2, 2]
+    elif datasets == 'PD4T':
+        off_avg_tol = [30, 30, 30, 3.5]
+    elif datasets == 'CAMERA,PD4T' or 'PD4T,CAMERA':
+        off_avg_tol = [30, 30, 30, 3.5]
+    else:
+        raise ValueError(f"Invalid dataset: {datasets}")
+    unacceptable_folds = True
+    while unacceptable_folds:
+        np.random.shuffle(subj_ids)
+        eval_folds = []
+        eval_fold_labels = []
+        eval_fold_dists = []
+        for i in range(N):
+            num_eval_subjs = len(subj_ids) // N
+            eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
+            
+            fold_data = data.get_subj_data(eval_subjs, format=data_format, use_ratio=use_ratio, combine_34=combine_34)
+            fold_labels = fold_data[1][:, annot_id]
+            label_dist = np.bincount(fold_labels.flatten().astype(int), minlength=4)        
+            eval_folds.append(eval_subjs)
+            eval_fold_labels.append(fold_labels)
+            eval_fold_dists.append(label_dist)
+        
+        # Check conditions
+        if datasets == 'CAMERA':
+            class_4_mask = np.array([True, True, True, True])
+        elif datasets == 'PD4T':
+            class_4_mask = np.array([True, True, True, False])
+        elif datasets == 'CAMERA,PD4T' or 'PD4T,CAMERA':
+            class_4_mask = np.array([True, True, True, True])
+        else:
+            raise ValueError(f"Invalid dataset: {datasets}")
+        out_of_tol = np.any(np.abs(eval_fold_dists - (total_dist / N)) > off_avg_tol, where=class_4_mask)
+        # if any folds have 0 in a class
+        has_0cnt = np.any([np.all(eval_fold_dists, axis=1) == 0])
+
+        unacceptable_folds = np.any([out_of_tol, has_0cnt])
+
+        # # DEBUG: print out fold distributions
+        # print('Label distribution across folds:')
+        # for i, dist in enumerate(eval_fold_dists):
+        #     print(f'Fold {i+1}: {dist}')
+        # total_dist = np.sum(eval_fold_dists, axis=0)
+        # print(f'Total distribution: {total_dist}')
+        # print(f'Avg distribution: {total_dist / N}')
+
+    print('Label distribution across folds:')
+    for i, dist in enumerate(eval_fold_dists):
+        print(f'Fold {i+1}: {dist}')
+    
+    # check total distribution
+    total_dist = np.sum(eval_fold_dists, axis=0)
+    print(f'Total distribution: {total_dist}')
+    print(f'Avg distribution: {total_dist / N}')
+
+    return eval_folds, eval_fold_dists
+
 def equalize_class_samples(x_tensor_in, y_tensor_in, weight_annot_idx=1):
     '''
     Equalize the number of samples for each class in the dataset
@@ -83,25 +169,11 @@ def balance_eval_split(x_train, x_test, y_train, y_test,
         x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples(maj_class_ids, 
                                                                                             [x_train, y_train, subj_ids_train], 
                                                                                             [x_test, y_test, subj_ids_test])
-        # move_idxs = np.random.choice(maj_class_idxs, num_test_maj_move, replace=False)
-        # x_train = np.concatenate([x_train, x_test[move_idxs]])
-        # y_train = np.concatenate([y_train, y_test[move_idxs]])
-        # subj_ids_train = np.concatenate([subj_ids_train, subj_ids_test[move_idxs]])
-        # x_test = np.delete(x_test, move_idxs, axis=0)
-        # y_test = np.delete(y_test, move_idxs, axis=0)
-        # subj_ids_test = np.delete(subj_ids_test, move_idxs, axis=0)
 
         # move min class samples from train to test
         x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples(min_class_ids, 
                                                                                             [x_train, y_train, subj_ids_train], 
                                                                                             [x_test, y_test, subj_ids_test])
-        # move_idxs = np.random.choice(min_class_idxs, num_test_min_move, replace=False)
-        # x_test = np.concatenate([x_test, x_train[move_idxs]])
-        # y_test = np.concatenate([y_test, y_train[move_idxs]])
-        # subj_ids_test = np.concatenate([subj_ids_test, subj_ids_train[move_idxs]])
-        # x_train = np.delete(x_train, move_idxs, axis=0)
-        # y_train = np.delete(y_train, move_idxs, axis=0)
-        # subj_ids_train = np.delete(subj_ids_train, move_idxs, axis=0)
 
     train_class_cnt = np.array(
         [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])

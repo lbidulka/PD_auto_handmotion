@@ -181,7 +181,7 @@ class Base_DeepNet():
             self.model.train()
             for i, data in enumerate(trainloader, 0):
                 inputs, labels = data
-                # inputs, labels = inputs.to(self.device), labels.to(self.device)
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
                 self.optimizer.zero_grad()
                 outputs = self.model(inputs)
                 loss = self.loss(outputs, labels)
@@ -200,7 +200,7 @@ class Base_DeepNet():
             with torch.no_grad():
                 for data in valloader:
                     inputs, labels = data
-                    # inputs, labels = inputs.to(self.device), labels.to(self.device)
+                    inputs, labels = inputs.to(self.device), labels.to(self.device)
                     outputs = self.model(inputs)
                     loss = self.loss(outputs, labels)
                     val_loss += loss.item()
@@ -220,10 +220,10 @@ class Base_DeepNet():
                     'f1': val_f1 / len(valloader),
                 }
             }
-            wandb.log({
-                'train_loss': metrics['train']['loss'], 'val_loss': metrics['val']['loss'],
-                'train_f1': metrics['train']['f1'], 'val_f1': metrics['val']['f1'],
-            })
+            wandb_log = {
+                    'train_loss': metrics['train']['loss'], 'val_loss': metrics['val']['loss'],
+                    'train_f1': metrics['train']['f1'], 'val_f1': metrics['val']['f1'],
+                }
             metrics_str = 'train_loss: {:.3f}, val_loss: {:.3f} | train_f1: {:.3f}, val_f1: {:.3f}'.format(metrics['train']['loss'], 
                                                                                                            metrics['val']['loss'], 
                                                                                                            metrics['train']['f1'], 
@@ -234,32 +234,29 @@ class Base_DeepNet():
                     print(f'|| LR: {self.scheduler.get_last_lr()[0]:.6f}')
 
             # Save best model
-            selection_metric = 'f1' #val_loss, val_f1
-            
+            selection_metric = 'loss' #f1, loss
             save_model = False
             if epoch == 0:
                 save_model = True
-            elif (selection_metric == 'f1') and (metrics['val']['f1'] > best_val_metric):
+            elif (selection_metric == 'f1') and (metrics['val'][selection_metric] > best_val_metric):
                 save_model = True
-            elif (selection_metric == 'val_loss') and (metrics['val']['loss'] < best_val_metric):
+            elif (selection_metric == 'loss') and (metrics['val'][selection_metric] < best_val_metric):
                 save_model = True
-
             if save_model:
                 best_val_metric = metrics['val'][selection_metric]
+                best_metrics = metrics
                 best_model = self.model.state_dict()
                 print(f'                          ---> New best saved @ Ep: {epoch}, ' + metrics_str)
-
-            # if epoch == 0:
-            #     best_selection_metric = selection_metric
-            #     best_model = self.model.state_dict()
-            #     print(f'                          ---> New best saved @ Ep: {epoch}, ' + metrics_str)
-            # elif selection_metric < best_selection_metric:
-            #     best_selection_metric = selection_metric
-            #     best_model = self.model.state_dict()
-            #     print(f'                          ---> New best saved @ Ep: {epoch}, ' + metrics_str)
+            wandb_log.update({
+                'best_train_f1': best_metrics['train']['f1'], 'best_val_f1': best_metrics['val']['f1'],
+            })
+            # Dump to wandb if available
+            if wandb.run is not None:
+                wandb.log(wandb_log)
             
             if self.scheduler is not None:
                 self.scheduler.step()     
+
         # Load best model after training
         if best_model is not None:
             self.model.load_state_dict(best_model)

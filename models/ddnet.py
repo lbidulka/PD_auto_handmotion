@@ -14,9 +14,10 @@ import utils.loss
 import utils.focal_loss
 
 class DDNet(Base_DeepNet):
-    def __init__(self, task,):
+    def __init__(self, task, datasets, device):
         super().__init__()
         self.name = 'ddnet'
+        self.datasets = datasets
         
         # Task
         self.task = task
@@ -25,7 +26,7 @@ class DDNet(Base_DeepNet):
         # Data params
         self.shuffle = True
         self.drop_last = False
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(device) #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.num_workers = 0
         self.print_loss = True
         self.print_epochs = 1
@@ -46,8 +47,15 @@ class DDNet(Base_DeepNet):
 
             # Training params
             self.val_frac = 0.3
-            self.batch_size = 64
-            self.num_epochs = 30
+            if self.datasets == 'PD4T':
+                self.batch_size = 128
+                self.num_epochs = 50
+            elif self.datasets == 'CAMERA,PD4T' or self.datasets == 'PD4T,CAMERA':
+                self.batch_size = 128
+                self.num_epochs = 30
+            else:
+                self.batch_size = 64
+                self.num_epochs = 50
             self.lr = 1e-3
             # self.criterion = 'CrossEntropy'
             self.loss_type = 'Focal'
@@ -99,6 +107,7 @@ class DDNet(Base_DeepNet):
             preds_clip = []
             for clip in clips:
                 clip = self.norm_input(clip.unsqueeze(0))
+                clip = clip.to(self.device)
                 with torch.no_grad():
                     logits = self.model(clip)
 
@@ -109,6 +118,10 @@ class DDNet(Base_DeepNet):
                 else:
                     raise NotImplementedError
                 preds_clip.append(preds)
+
+            # TEMP: handle too-short sequence (no clips)
+            if len(preds_clip) == 0:
+                preds_clip = [torch.zeros(1, dtype=torch.long).to(self.device)]
             preds_all_clips.append(torch.stack(preds_clip).float().mean())
         avg_pred = torch.stack(preds_all_clips).round()
         return avg_pred
@@ -128,12 +141,16 @@ class DDNet(Base_DeepNet):
                 if thumb_x < root_x:
                     x[i,:,:,0] *= -1
 
-        # normalize to palm size
+        # normalize size & mean
         for i, clip in enumerate(x):
+            # palm size
             wrist = clip[:,0]
             palm_vector = ((clip[:,5] - wrist) + (clip[:,9] - wrist) + (clip[:,13] - wrist) + (clip[:,17] - wrist)) / 4
             palm_size = np.linalg.norm(palm_vector, axis=1).reshape(-1,1,1)
             x[i] /= palm_size
+            # mean root joint 
+            mean_root = clip[:,0].mean(0)
+            x[i] -= mean_root
 
         return x
 
