@@ -10,7 +10,8 @@ import utils.features as features
 def make_subj_folds(subj_ids, N, data,
                     datasets,
                     data_format, use_ratio, combine_34,
-                    annot_id=1):
+                    annot_id=1,
+                    max_iters=25):
     '''
     Splits the subj ids into N folds, ensureing that each fold has a relatively 
     balanced label distribution
@@ -43,7 +44,8 @@ def make_subj_folds(subj_ids, N, data,
     else:
         raise ValueError(f"Invalid dataset: {datasets}")
     unacceptable_folds = True
-    while unacceptable_folds:
+    iters = 0
+    while unacceptable_folds and (iters < max_iters):
         np.random.shuffle(subj_ids)
         eval_folds = []
         eval_fold_labels = []
@@ -81,6 +83,7 @@ def make_subj_folds(subj_ids, N, data,
         # total_dist = np.sum(eval_fold_dists, axis=0)
         # print(f'Total distribution: {total_dist}')
         # print(f'Avg distribution: {total_dist / N}')
+        iters += 1
 
     print('Label distribution across folds:')
     for i, dist in enumerate(eval_fold_dists):
@@ -117,33 +120,41 @@ def move_subj_samples(subjs, source, dest):
     '''
     Move all [subj] samples from source [x,y,subj_ids] to dest [x,y,subj_ids]
     '''
+    if len(subjs) == 0:
+        return source, dest
     for subj in subjs:
         subj_idxs = np.where(source[2] == subj)[0]
         x_subj = source[0][subj_idxs]
         y_subj = source[1][subj_idxs]
         subj_ids_subj = source[2][subj_idxs]
 
+        # add to dest
         x_dest = np.concatenate([dest[0], x_subj])
         y_dest = np.concatenate([dest[1], y_subj])
         subj_ids_dest = np.concatenate([dest[2], subj_ids_subj])
+        # remove from source
         x_source = np.delete(source[0], subj_idxs, axis=0)
         y_source = np.delete(source[1], subj_idxs, axis=0)
         subj_ids_source = np.delete(source[2], subj_idxs, axis=0)
 
-    return x_source, y_source, subj_ids_source, x_dest, y_dest, subj_ids_dest
+    return [x_source, y_source, subj_ids_source], [x_dest, y_dest, subj_ids_dest]
 
 def balance_eval_split(x_train, x_test, y_train, y_test, 
                        subj_ids_train, subj_ids_test,
-                       tol=0.2, weight_annot_idx=1):
+                       tol=0.2, itr_max=20,
+                       weight_annot_idx=1):
     '''
     Ensure that test split has somewhat balanced classes
+    
+    tol:        tolerance for class imbalance
+    iter_max:   max number of iterations to balance classes
     '''    
-    # ensure at least 1 sample in each class
+    # ensure at least 1 sample in each class for testset, move from trainset if necessary
     for t in np.unique(y_train):
         if len(y_test[y_test[:,weight_annot_idx] == t]) == 0:
             move_idx = np.where(y_train[:,weight_annot_idx] == t)[0][0]
             move_subj = subj_ids_train[move_idx]
-            x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples([move_subj], 
+            [x_train, y_train, subj_ids_train], [x_test, y_test, subj_ids_test] = move_subj_samples([move_subj], 
                                                                                                 [x_train, y_train, subj_ids_train], 
                                                                                                 [x_test, y_test, subj_ids_test])
 
@@ -151,29 +162,32 @@ def balance_eval_split(x_train, x_test, y_train, y_test,
         [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])
     test_class_cnt = np.array(
         [len(y_test[y_test[:,weight_annot_idx] == t]) for t in np.unique(y_test)])
+    test_class_diff = test_class_cnt.max() - test_class_cnt.min()
 
     # move maj test class samples from test to train, min test class samples from train to test
-    test_class_diff = test_class_cnt.max() - test_class_cnt.min()
-    if test_class_diff > (tol*test_class_cnt.max()):
-        num_test_maj_move = 1
-        num_test_min_move = 1
-
+    itr = 0
+    while (test_class_diff > (tol*test_class_cnt.max())) and (itr < itr_max):
         maj_class = np.argmax(test_class_cnt)
         min_class = np.argmin(test_class_cnt)
         maj_class_idxs = np.where(y_test[:,weight_annot_idx] == maj_class)[0]
         min_class_idxs = np.where(y_train[:,weight_annot_idx] == min_class)[0]
-        maj_class_ids = subj_ids_test[maj_class_idxs]
-        min_class_ids = subj_ids_train[min_class_idxs]
+        test_maj_class_ids = subj_ids_test[maj_class_idxs]
+        train_min_class_ids = subj_ids_train[min_class_idxs]
 
-        # move maj class samples from test to train
-        x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples(maj_class_ids, 
-                                                                                            [x_train, y_train, subj_ids_train], 
+        # move maj class samples from test to train, min class samples from train to test
+        [x_test, y_test, subj_ids_test], [x_train, y_train, subj_ids_train] = move_subj_samples(test_maj_class_ids,  
+                                                                                            [x_test, y_test, subj_ids_test],
+                                                                                            [x_train, y_train, subj_ids_train])
+        [x_train, y_train, subj_ids_train], [x_test, y_test, subj_ids_test] = move_subj_samples(train_min_class_ids, 
+                                                                                            [x_train, y_train, subj_ids_train],
                                                                                             [x_test, y_test, subj_ids_test])
-
-        # move min class samples from train to test
-        x_train, y_train, subj_ids_train, x_test, y_test, subj_ids_test = move_subj_samples(min_class_ids, 
-                                                                                            [x_train, y_train, subj_ids_train], 
-                                                                                            [x_test, y_test, subj_ids_test])
+        
+        # new count
+        test_class_cnt = np.array(
+            [len(y_test[y_test[:,weight_annot_idx] == t]) for t in np.unique(y_test)])
+        test_class_diff = test_class_cnt.max() - test_class_cnt.min()
+        
+        itr += 1
 
     train_class_cnt = np.array(
         [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])

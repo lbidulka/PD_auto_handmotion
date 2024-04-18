@@ -20,11 +20,12 @@ def parse_args():
     parser.add_argument('--datasets', default='CAMERA,PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
-    parser.add_argument('--wblog', default=True, help='Log to wandb?')   # True False
+    parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
     parser.add_argument('--num_trials', default=1, help='Number of trials to run')   # 1, 5, 10
     parser.add_argument('--num_folds', default=5, help='Number of folds for N-fold evaluation')   # 5, 10
+    parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
 
-    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -47,11 +48,9 @@ def set_seed(args):
     if not hasattr(args, 'seed'):
         seed = random.randint(0, 1000000)
         args.seed = seed
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    # if args.wblog:
-    #     wandb.config.seed = seed
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
     return 
 
 def init_logger(args, model):
@@ -73,46 +72,14 @@ def init_logger(args, model):
 
             config['m_frame_l'] = model.frame_l
             config['m_filters'] = model.filters
+            config['m_m_branch'] = model.m_branch
+            config['m_f_branch'] = model.f_branch
+            config['m_in_kpts'] = model.input_kpts
 
         if model.scheduler_type is not None:
             config['m_scheduler_type'] = model.scheduler_type
 
         wandb.init(project='auto-UPDRS', config=config)
-
-def CA_TCC_eval(args, model,):
-    '''
-    Train/val/test split evaluation using splits from CA-TCC experiment
-    '''
-    assert args.task == 'multiclass'
-
-    combine_34 = False
-    unscaled_ts = False  # if True, use unscaled timeseries data
-
-    # Load data
-    data_splits_path = '../CA-TCC/data/camUPDRS/'
-    data = data_timeseries.data_timeseries(CATCC_splits_path=data_splits_path)
-    train_x = data.train_frac['samples'].numpy()
-    train_y = data.train_frac['labels'].numpy()
-    val_x = data.val_frac['samples'].numpy()
-    val_y = data.val_frac['labels'].numpy()
-    test_x = data.test['samples'].numpy()
-    test_y = data.test['labels'].numpy()
-    
-    # simulate multiple raters
-    train_y = np.repeat(train_y.reshape(-1,1), 2, axis=1)
-    val_y = np.repeat(val_y.reshape(-1,1), 2, axis=1)
-    test_y = np.repeat(test_y.reshape(-1,1), 2, axis=1)
-
-    # Train and eval
-    model.init_model()
-    model.train(train_x, train_y, x_val=val_x, y_val=val_y)
-    model.model.eval()
-    test_pred = model(test_x).numpy()
-
-    # Metrics
-    metrics = eval_utils.get_metrics(test_pred.reshape(-1,1), test_y, task=args.task)
-    print(f'\n--- {model.name} ---')
-    print_metrics(metrics)
 
 def N_fold_eval(args, model, data):
     '''
@@ -122,8 +89,8 @@ def N_fold_eval(args, model, data):
         data_format = 'scaled'
         combine_34 = True
     elif model.name == 'ddnet':
-        data_format = 'unscaled_kpt'
-        combine_34 = True
+        data_format = model.sample_format
+        combine_34 = model.combine_34
     else:
         data_format = 'scaled'  # 'scaled', 'unscaled', 'unscaled_kpt'
         combine_34 = False
@@ -150,7 +117,7 @@ def N_fold_eval(args, model, data):
     
     # Run that sucker
     print(f'\n{args.num_folds}-fold Eval on {len(subj_ids)} subjects:')
-    eval_preds, eval_targets = [], []
+    eval_preds, eval_targets, eval_ids = [], [], []
     for i in tqdm(range(args.num_folds)):
         eval_subjs = eval_folds[i]
         eval_subj_data = data.get_subj_data([eval_subjs], format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
@@ -180,21 +147,24 @@ def N_fold_eval(args, model, data):
 
             eval_preds.append(test_pred.reshape(-1))
             eval_targets.append(test_y)
+            eval_ids.append(test_subj_ids)
     
     eval_preds = np.hstack(eval_preds)
     eval_targets = np.vstack(eval_targets)
+    eval_ids = np.hstack(eval_ids)
     metrics = eval_utils.get_metrics(eval_preds, eval_targets, 
                                      task=args.task)
     
     wandb_annot_idx = 1
-    wandb.log({
-        'T_acc': metrics[wandb_annot_idx]['acc'],
-        'T_acc_t2': metrics[wandb_annot_idx]['acc_t2'],
-        'T_precision': metrics[wandb_annot_idx]['precision'],
-        'T_recall': metrics[wandb_annot_idx]['recall'],
-        'T_f1': metrics[wandb_annot_idx]['f1'],
-        'T_conf_mat': metrics[wandb_annot_idx]['conf_mat'],
-    })
+    if wandb.run is not None:
+        wandb.log({
+            'T_acc': metrics[wandb_annot_idx]['acc'],
+            'T_acc_t2': metrics[wandb_annot_idx]['acc_t2'],
+            'T_precision': metrics[wandb_annot_idx]['precision'],
+            'T_recall': metrics[wandb_annot_idx]['recall'],
+            'T_f1': metrics[wandb_annot_idx]['f1'],
+            'T_conf_mat': metrics[wandb_annot_idx]['conf_mat'],
+        })
     print(f'\n--- {model.name} ---')
     print_metrics(metrics)
     
@@ -261,7 +231,6 @@ if __name__ == '__main__':
 
         # Train/Eval the model
         N_fold_eval(args, model, data)
-        # CA_TCC_eval(args, model)
 
         wandb.finish()
 

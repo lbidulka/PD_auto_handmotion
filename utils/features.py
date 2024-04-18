@@ -3,7 +3,9 @@ import scipy.signal as signal
 import pycatch22
 
 
-def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25, smooth=True):
+def get_cycle_peaks(x, min_peak_dist=60, keep=10, 
+                    savgol_win=10, prominence=0.25, 
+                    smooth=True, pad_out=False):
     # find cycle peaks and get avg vals around at peak
     peak_idxs = []
     peak_vals = []
@@ -20,7 +22,9 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25
         peak_window = 2
         peak_vals.append([])
         for p in peak_idxs[i]:
-            peak_vals[i].append(x[i][p-peak_window:p+peak_window].mean())
+            _start = min(p-peak_window, 0)
+            _end = max(p+peak_window, len(x[i]))
+            peak_vals[i].append(x[i][_start:_end].mean())
         peak_vals[i] = np.array(peak_vals[i])
         
         # take only top 10 peaks
@@ -32,6 +36,11 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10, savgol_win=10, prominence=0.25
             # pop the rejected idxs
             peak_vals[i] = np.delete(peak_vals[i], rej_idxs)
             peak_idxs[i] = np.delete(peak_idxs[i], rej_idxs)
+        # pad output to keep constant length
+        if (len(peak_vals[i]) < keep) and pad_out:
+            n_pad = keep - len(peak_vals[i])
+            peak_vals[i] = np.pad(peak_vals[i], (0, n_pad), 'constant', constant_values=(-1))
+            peak_idxs[i] = np.pad(peak_idxs[i], (0, n_pad), 'constant', constant_values=(-1))
 
     return peak_idxs, peak_vals  
 
@@ -216,6 +225,128 @@ def get_finger_palm_distance(raw_data):
         norm_dists.append(dist / palm_size)
         # norm_dists.append(dist)
     return norm_dists
+
+def get_UPDRS_amplitude_decrement(peak_vals, min_num_peaks, amp_dec_thresh, score=True):
+    '''
+    Given peak values of avg fingertip-palm distance, get UPDRS amplitude decrement score
+
+    args: 
+        peak_vals: list of lists, each list containing the peak values 
+        score:     if True, return UPDRS score, else return last dec idx
+    '''
+    # get vals around each peak
+    amp_decs = []
+    dec_idxs = []
+    for i in range(len(peak_vals)):
+        if len(peak_vals[i]) < min_num_peaks:
+            amp_dec = 0
+            last_dec = -1
+        else:
+            # Check for amplitude decrement, by comparing first 3 peaks avg to last 3 peaks avg
+            init_window = 3
+            final_window = 3
+            init_peak_avg = np.array(peak_vals[i][:init_window]).mean()
+            final_peak_avg = np.array(peak_vals[i][-final_window:]).mean()
+
+            # if ratio of final to initial peak avg is less than threshold, then amp decrement is present
+            amp_dec = 0
+            last_dec = 0
+            if final_peak_avg / init_peak_avg < amp_dec_thresh:
+                for j in range(1, len(peak_vals[i])-3):
+                        # find starting idx of amp dec
+                        curr_avg = np.array(peak_vals[i][:j]).mean()
+                        next_avg = np.array(peak_vals[i][j:]).mean()
+                        if next_avg / curr_avg < amp_dec_thresh:
+                            if j < 3:   # beginning
+                                amp_dec = 3
+                            elif j < 7: # middle
+                                amp_dec = 2
+                            else:       # end
+                                amp_dec = 1
+                            last_dec = j
+        amp_decs.append(amp_dec)
+        dec_idxs.append(last_dec)
+    if score:
+        return amp_decs
+    else:
+        return dec_idxs
+
+def get_UPDRS_num_hesitations(peak_idxs, peak_vals, 
+                              min_num_peaks, hesitation_resid_thresh, score=False):
+        '''
+        alg:
+        
+        1. get peaks and peak idxs
+        2. fit linear model to peak series
+        3. find residuals of linear model for the peaks
+        4. count num peaks with residuals > hesitation threshold
+
+        args:
+            peak_idxs: list of lists, each list containing the peak idxs
+            peak_vals: list of lists, each list containing the peak values
+            score:     if True, return UPDRS score, else return num hesitations
+        '''
+        hesitations_scores = []
+        num_hesitations = []
+        num_samples = len(peak_idxs)
+        for i in range(num_samples):
+            if len(peak_idxs[i]) < min_num_peaks:
+                hesitations_score = 0
+                _num_hesitations = -1
+            else:
+                hesitations = get_hesitations(peak_vals[i], peak_idxs[i], hesitation_resid_thresh)
+                _num_hesitations = len(hesitations)
+                # Score logic from MDS-UPDRS:
+                if _num_hesitations > 5:
+                    hesitations_score = 3
+                elif _num_hesitations >= 3:
+                    hesitations_score = 2
+                elif _num_hesitations >= 1:
+                    hesitations_score = 1         
+                else:
+                    hesitations_score = 0
+            hesitations_scores.append(hesitations_score)
+            num_hesitations.append(_num_hesitations)
+        if score:
+            return hesitations_scores
+        else:
+            return num_hesitations
+
+def get_UPDRS_slowing(peak_idxs, min_num_peaks, score=False):
+        ''' 
+        Get UPDRS slowing score
+
+        args:
+            peak_idxs: list of lists, each list containing the peak idxs
+            score:    if True, return UPDRS score, else return slowing value
+        '''            
+        slowings_scores = []
+        slowings = []
+        for i in range(len(peak_idxs)):
+            if len(peak_idxs[i]) < min_num_peaks:
+                slowing = 0
+                t_trend = -1
+            else:
+                # find the time between peaks
+                peak_t_diffs = np.diff(peak_idxs[i])
+                # fit a line to the peak_t_diffs and get slope
+                t_diff_line = np.polyfit(np.arange(len(peak_t_diffs)), peak_t_diffs, 1)
+                t_trend = t_diff_line[0]
+                # if slowing trend is positive, then slowing is present
+                slowing = 0
+                if t_trend >= 0.5:
+                    if t_trend < 1.0:
+                        slowing = 1
+                    elif t_trend < 2.0:
+                        slowing = 2
+                    else:
+                        slowing = 3
+            slowings_scores.append(slowing)
+            slowings.append(t_trend)
+        if score:
+            return slowings_scores
+        else:
+            return slowings
 
 def get_hesitations(peak_vals, peak_idxs, residual_thresh):
     '''

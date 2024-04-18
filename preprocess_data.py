@@ -109,7 +109,6 @@ if __name__ == '__main__':
     max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
     finger_dists_upscale = []
     upscale_ratios = []
-    finger_dists_trimmed_pad = []
     for i, dists_data in enumerate(finger_dists_trimmed):
         # interpolate each channel
         interp_data = []

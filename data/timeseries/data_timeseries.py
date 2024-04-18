@@ -57,22 +57,50 @@ class data_timeseries():
             
         self.x = np.vstack(x)
         self.x_unscaled = [ts for ts_list in x_unscaled for ts in ts_list]
-        self.x_kpts = [ts for ts_list in x_kpts for ts in ts_list]
+        self.x_kpts_unscaled = [ts for ts_list in x_kpts for ts in ts_list]
+        self.x_kpts, self.kpts_rescale_ratios = self.scale_to_uniform_len(self.x_kpts_unscaled)
 
-        # convert x_kpts to np array by padding with (-999, -999, -999)
+        # convert x_kpts to np array by padding with last_idx
         max_len = max([ts.shape[0] for ts in self.x_kpts])
         x_kpts_pad = np.zeros((len(self.x_kpts), max_len+1, self.x_kpts[0].shape[1], 3))
         for i, ts in enumerate(self.x_kpts):
             x_kpts_pad[i, :ts.shape[0]] = ts
             x_kpts_pad[i, ts.shape[0]:] = ts.shape[0]
 
-        self.x_kpts = x_kpts_pad
+        self.x_kpts_unscaled = x_kpts_pad
         self.y = np.vstack(y)
         self.subj_ids = np.hstack(subj_ids)
         self.handednesses = np.hstack(handednesses)
         self.upscale_ratios = np.hstack(upscale_ratios)
         return 
     
+    def scale_to_uniform_len(self, x, max_seq_len=256):
+        '''
+        Scale samples in x to uniform length, either specified or max of all samples
+
+        args:
+        x: n_samples long list of (sample_len, num_kpts, 3) np arrays
+        '''
+        # increase max_seq_len to nearest multiple of 8
+        max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
+        x_rescale = []
+        rescale_ratios = []
+        for i, sample in enumerate(x):
+            # interpolate all dims of each channel
+            interp_data = []
+            for j in range(sample.shape[1]):
+                start = [0 for i in range(sample.shape[2])]
+                stop = [sample.shape[0] for i in range(sample.shape[2])]
+                xvals = np.linspace(start, stop, max_seq_len)
+                _interp_data = [np.interp(xvals[:,k], np.arange(sample.shape[0]), sample[:,j,k]) for k in range(sample.shape[2])]
+                interp_data.append(np.stack(_interp_data, axis=1))
+            rescale_ratios.append(xvals.shape[0] / sample.shape[0])
+            interp_data = np.stack(interp_data, axis=1)
+            x_rescale.append(interp_data)
+        x_rescale = np.array(x_rescale)
+        rescale_ratios = np.array(rescale_ratios)
+        return x_rescale, rescale_ratios
+
     def delete_idxs(self, idxs):
         '''
         Delete samples at specified indices
@@ -80,10 +108,12 @@ class data_timeseries():
         self.x = np.delete(self.x, idxs, axis=0)
         self.x_unscaled = [ts for i, ts in enumerate(self.x_unscaled) if i not in idxs]
         self.x_kpts = np.delete(self.x_kpts, idxs, axis=0) #[ts for i, ts in enumerate(self.x_kpts) if i not in idxs]
+        self.x_kpts_unscaled = np.delete(self.x_kpts_unscaled, idxs, axis=0)
         self.y = np.delete(self.y, idxs, axis=0)
         self.subj_ids = np.delete(self.subj_ids, idxs, axis=0)
         self.handednesses = np.delete(self.handednesses, idxs, axis=0)
         self.upscale_ratios = np.delete(self.upscale_ratios, idxs, axis=0)
+        self.kpts_rescale_ratios = np.delete(self.kpts_rescale_ratios, idxs, axis=0)
     
     def get_subj_data(self, subj_ids, format='scaled',
                       use_ratio=False, combine_34=False):
@@ -104,7 +134,14 @@ class data_timeseries():
         elif format == 'unscaled':
             out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
         elif format == 'unscaled_kpt':
-            out_x = self.x_kpts[subj_idxs] #[ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
+            out_x = self.x_kpts_unscaled[subj_idxs] #[ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
+        elif format == 'scaled_kpt':
+            out_x = self.x_kpts[subj_idxs]
+            # append ratio to last entry
+            subj_rescale_ratios = self.kpts_rescale_ratios[subj_idxs]
+            out_x = np.append(out_x, 
+                            np.repeat(np.repeat(subj_rescale_ratios.reshape(-1,1,1,1), 3, axis=-1), 21, axis=2), 
+                            axis=1)
         
         out_ids = self.subj_ids[subj_idxs]
         out_ids = np.array([int(id) for id in out_ids])
