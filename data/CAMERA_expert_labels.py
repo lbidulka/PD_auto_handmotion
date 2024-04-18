@@ -3,35 +3,40 @@ import pandas as pd
 import msoffcrypto
 
 
-# Clinical UPDRS labels given by Suzie 
-UPDRS_labels_suzie_path = '/mnt/teamshare-camera/CAMERA Booth Data/' + 'CAMERA Study Booth - Tracking Log_RM-No Names.xlsx'
-# Load the encrypted Excel file
-passwd = 'pprc'
-decrypted_workbook = io.BytesIO()
-with open(UPDRS_labels_suzie_path, 'rb') as file:
-    office_file = msoffcrypto.OfficeFile(file)
-    office_file.load_key(password=passwd)
-    office_file.decrypt(decrypted_workbook)
-UPDRS_labels_suzie = pd.read_excel(decrypted_workbook, sheet_name='SA', header=2, usecols='A,B,Q,S,Z')
-UPDRS_labels_suzie = UPDRS_labels_suzie.dropna()
-# iterate over and populate the dict
-UPDRS_med_data_SA = {}
-for i, row in UPDRS_labels_suzie.iterrows():
-    date = str(row['Date'])[:10].replace('-', '')
-    label = {'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']},
-                                 'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},}
-    UPDRS_med_data_SA[str(row['ID'])] = label
+try:
+    # Clinical UPDRS labels given by Suzie 
+    UPDRS_labels_suzie_path = '/mnt/teamshare-camera/CAMERA Booth Data/' + 'CAMERA Study Booth - Tracking Log_RM-No Names.xlsx'
+    # Load the encrypted Excel file
+    passwd = 'pprc'
+    decrypted_workbook = io.BytesIO()
+    with open(UPDRS_labels_suzie_path, 'rb') as file:
+        office_file = msoffcrypto.OfficeFile(file)
+        office_file.load_key(password=passwd)
+        office_file.decrypt(decrypted_workbook)
+    UPDRS_labels_suzie = pd.read_excel(decrypted_workbook, sheet_name='SA', header=2, usecols='A,B,Q,S,Z')
+    UPDRS_labels_suzie = UPDRS_labels_suzie.dropna()
+    # iterate over and populate the dict
+    UPDRS_med_data_SA = {}
+    for i, row in UPDRS_labels_suzie.iterrows():
+        date = str(row['Date'])[:10].replace('-', '')
+        label = {'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']},
+                                    'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},}
+        UPDRS_med_data_SA[str(row['ID'])] = label
 
-# Clinical UPDRS labels given by Kye Won Park
-UPDRS_labels_kw = pd.read_excel(decrypted_workbook, sheet_name='KW', header=2, usecols='A,B,M,O,')
-UPDRS_labels_kw = UPDRS_labels_kw.dropna()
-# iterate over and populate the dict
-UPDRS_med_data_KW = {}
-for i, row in UPDRS_labels_kw.iterrows():
-    date = str(row['Date'])[:10].replace('-', '')
-    label = {'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']},
-                                 'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},}
-    UPDRS_med_data_KW[str(row['ID'])] = label
+    # Clinical UPDRS labels given by Kye Won Park
+    UPDRS_labels_kw = pd.read_excel(decrypted_workbook, sheet_name='KW', header=2, usecols='A,B,M,O,')
+    UPDRS_labels_kw = UPDRS_labels_kw.dropna()
+    # iterate over and populate the dict
+    UPDRS_med_data_KW = {}
+    for i, row in UPDRS_labels_kw.iterrows():
+        date = str(row['Date'])[:10].replace('-', '')
+        label = {'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']},
+                                    'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},}
+        UPDRS_med_data_KW[str(row['ID'])] = label
+except:
+    print('Failed to load UPDRS labels')
+    UPDRS_med_data_SA = {}
+    UPDRS_med_data_KW = {}
 
 # Samples with under 10 cycles
 too_short = {
