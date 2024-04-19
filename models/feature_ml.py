@@ -37,19 +37,16 @@ class Feature_ML():
         self.use_ratio = False
 
     def __call__(self, x,):
+        average_input = np.zeros((x.shape[0], x.shape[1]))
+        for i in range(x.shape[0]):
+            average_input[i,:] = x[i].mean(axis = 1)
+        features_input, features_input_pdnet = self.get_features(average_input)
 
-        # convert x from numpy to list of numpy
-        if isinstance(x, np.ndarray):
-            x = [x[i] for i in range(x.shape[0])]
-
-        # average_input = np.zeros((x.shape[0], x.shape[1]))
-        average_input = []
-        for i in range(len(x)):
-            # average_input[i,:] = x[i].mean(axis = 1)
-            average_input.append(x[i].mean(axis = 1))
-        features_input = self.get_features(average_input)
+        # concatinate with pdnet features
+        features_input = np.concatenate((features_input, features_input_pdnet), axis=1)
         features_input = self.scaler.transform(features_input)
 
+        # feature selection
         features_input = features_input[:, self.selected_features]
         preds = self.classifier.predict(features_input)
 
@@ -75,6 +72,8 @@ class Feature_ML():
 
         feature_vectors = features.get_catch22_features(x)
 
+        features_pdnet = []
+
         self.peak_idxs, self.peak_vals = self.get_peaks(x)
         self.valley_idxs, self.valley_vals = self.get_valleys(x)
         
@@ -91,6 +90,9 @@ class Feature_ML():
 
         # get cycle features
         self.effective_distance_completed, self.total_distance_travelled, self.cycle_times, self.effective_average_speed, self.total_average_speed, self.smoothness = features.get_cycle_features(x, self.peak_idxs, self.peak_vals, self.valley_vals)
+
+        self.amp, self.amp_decs, self.min_amp, self.interruption_pd = self.get_amplitude_pdnet(self.peak_vals, self.valley_vals)
+        self.slowing_pd, self.max_period, self.hesitation_pd = self.get_period_pdnet(self.peak_idxs)
 
         self.effective_distance_completed_mean = []
         self.effective_distance_completed_std = []
@@ -126,9 +128,10 @@ class Feature_ML():
         self.effective_average_speed_fatigue = []
         self.total_average_speed_fatigue = []
 
-        for id in range(len(x)):
+        for id in range(x.shape[0]):
+            features_pdnet.append([])
 
-            if len(self.effective_distance_completed[id])>0:
+            if len(self.peak_idxs[id]) > self.min_num_peaks:
 
                 self.effective_distance_completed_mean.append(np.mean(self.effective_distance_completed[id]))
                 self.effective_distance_completed_std.append(np.std(self.effective_distance_completed[id]))
@@ -212,8 +215,21 @@ class Feature_ML():
             feature_vectors[id].append(float(self.slowing[id]))
 
             feature_vectors[id].append(self.amp_fft_var[id])
-            
-        return  np.asarray(feature_vectors)
+
+            # pdnet features
+            features_pdnet[id].append(self.amp[id])
+            features_pdnet[id].append(self.amp_decs[id])
+            features_pdnet[id].append(self.min_amp[id])
+            features_pdnet[id].append(self.interruption_pd[id])
+            features_pdnet[id].append(self.slowing_pd[id])
+            features_pdnet[id].append(self.max_period[id])
+            features_pdnet[id].append(self.hesitation_pd[id])
+            if len(self.peak_idxs[id])>=9:
+                features_pdnet[id].append(1)
+            else:
+                features_pdnet[id].append(0)
+
+        return np.asarray(feature_vectors), np.asarray(features_pdnet)
     
     def get_num_hesitations(self, x):
 
@@ -246,6 +262,53 @@ class Feature_ML():
             hesitations_scores.append(hesitations_score)
         return hesitations_scores
 
+    def get_amplitude_pdnet(self, peak_vals, valley_vals):
+        '''
+        Given input timeseries of 4-channel finger
+        '''
+        # get vals around each peak
+        amp = []
+        amp_decs = []
+        min_amp = []
+        interruption = []
+        for i in range(len(peak_vals)):
+            if len(peak_vals[i]) < self.min_num_peaks:
+                amp.append(0)
+                amp_decs.append(0)
+                min_amp.append(0)
+                interruption.append(0)
+            else:
+                amp_series = []
+                for j in range(len(peak_vals[i])-1):
+                    amp_series.append((peak_vals[i][j+1]+peak_vals[i][j])/2-valley_vals[i][j])
+                amp.append(np.median(amp_series))
+                amp_decs.append(np.mean(amp_series[-3:])-np.mean(amp_series[:3]))
+                min_amp.append(np.min(amp_series))
+                interruption.append(len(features.get_interruptions_pdnet(amp_series, self.hesitation_resid_thresh)))
+
+        return amp, amp_decs, min_amp, interruption
+
+    def get_period_pdnet(self, peak_idxs):
+        slowing = []
+        max_period = []
+        hesitation = []
+         # get vals around each peak
+        for i in range(len(peak_idxs)):
+            if len(peak_idxs[i]) < self.min_num_peaks:
+                slowing.append(0)
+                max_period.append(0)
+                hesitation.append(0)
+            else:
+                period_series = []
+                
+                for j in range(len(peak_idxs[i])-1):
+                    period_series.append(peak_idxs[i][j+1]-peak_idxs[i][j])
+                slowing.append(np.median(period_series))
+                max_period.append(np.max(period_series))
+                hesitation.append(len(features.get_hesitations_pdnet(period_series, self.hesitation_resid_thresh)))
+
+        return slowing, max_period, hesitation
+    
     def get_amplitude_decrement(self, peak_vals):
         '''
         Given input timeseries of 4-channel finger
@@ -377,31 +440,24 @@ class Feature_ML():
         return x_aug, y_aug
 
     def train(self, x, y, x_val=None, y_val=None,):
-        # convert x from numpy to list of numpy
-        if isinstance(x, np.ndarray):
-            average_input = np.mean(x, axis=2)  # avg over fingers
-            average_input, y = self.augment_data(average_input, y)
-            features_input = self.get_features(average_input) # get features
-        else:
-            #     x = [x[i] for i in range(x.shape[0])]
-            # Change timeseries to feature vectors
-            # average_input = np.mean(x, axis=2)  # avg over fingers
-            average_input = []
-            # for i in range(len(x)):
-            #     average_input.appenD(x[i].mean(axis = 1))
-            average_input = [x[i].mean(axis = 1) for i in range(len(x))]
-            # average_input, y = self.augment_data(average_input, y)
-            features_input = self.get_features(average_input) # get features
-
-        if self.equalize_class_samples:
-            features_input, y = utils.data.equalize_class_samples(features_input, y)
+        average_input = np.zeros((x.shape[0], x.shape[1]))
+        for i in range(x.shape[0]):
+            average_input[i,:] = x[i].mean(axis = 1)
+        features_input, features_input_pdnet = self.get_features(average_input)
+        # concatinate with pdnet features
+        features_input = np.concatenate((features_input, features_input_pdnet), axis=1)
 
         # normalization
         self.scaler.fit(features_input)
         features_input = self.scaler.transform(features_input)
 
-        label = y[:, self.labeler_idx]
-        self.information_gain_feature_selection(features_input, label, n_selected_feature=self.n_selected_features)
+        if y.ndim==2:
+            label = y[:, self.labeler_idx]
+        else:
+            label = y
+        
+        # feature selection
+        self.information_gain_feature_selection(features_input, label, n_selected_feature=20)
         features_input = features_input[:, self.selected_features]
         self.classifier = self.classifier.fit(features_input, label)
 

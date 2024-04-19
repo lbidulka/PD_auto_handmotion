@@ -228,6 +228,26 @@ def get_hesitations(peak_vals, peak_idxs, residual_thresh):
     hesitations = np.where(residuals > residual_thresh)[0]
     return hesitations
 
+def get_hesitations_pdnet(period_series, residual_thresh):
+    '''
+    Find hesitations in peak series, given peak vals and peak idxs and residual threshold
+    (Following Ryans Definition in: "Clinically-informed Automated Assessment of Finger Tapping
+    Videos in Parkinson’s Disease")
+    '''
+    residuals = period_series - np.median(period_series)
+    hesitations = np.where(residuals > residual_thresh*np.median(period_series))[0]
+    return hesitations
+
+def get_interruptions_pdnet(amp_series, residual_thresh):
+    '''
+    Find hesitations in peak series, given peak vals and peak idxs and residual threshold
+    (Following Ryans Definition in: "Clinically-informed Automated Assessment of Finger Tapping
+    Videos in Parkinson’s Disease")
+    '''
+    residuals = np.median(amp_series)-amp_series
+    interruptions = np.where(residuals > residual_thresh*np.median(amp_series))[0]
+    return interruptions
+
 def get_hesitations_peaks_th(peak_vals, threshold):
     m = np.median(peak_vals)
     points_hes = 0
