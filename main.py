@@ -21,11 +21,11 @@ def parse_args():
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
-    parser.add_argument('--num_trials', default=1, help='Number of trials to run')   # 1, 5, 10
-    parser.add_argument('--num_folds', default=5, help='Number of folds for N-fold evaluation')   # 5, 10
-    parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
+    parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
+    parser.add_argument('--num_folds', default=10, help='Number of folds for N-fold evaluation')   # 5, 10
+    # parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
 
-    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -86,8 +86,8 @@ def N_fold_eval(args, model, data):
     N_fold train/evaluation over all samples. Excluding a few subjects for testing each time.
     '''
     if model.name == 'feature_ml':
-        data_format = 'scaled'
-        combine_34 = True
+        data_format = model.sample_format
+        combine_34 = model.combine_34
     elif model.name == 'ddnet':
         data_format = model.sample_format
         combine_34 = model.combine_34
@@ -109,12 +109,11 @@ def N_fold_eval(args, model, data):
     subj_ids = np.unique(data.subj_ids)
     subj_ids = np.random.permutation(subj_ids)
     eval_folds, eval_fold_dists = data_utils.make_subj_folds(subj_ids, args.num_folds, data, 
-                                                             args.datasets, 
-                                                             data_format, model.use_ratio, combine_34)
+                                                             args.datasets, data_format, model.use_ratio, 
+                                                             combine_34, model.labeler_idx)
     if args.wblog:
         wandb.log({'fold_dists': eval_fold_dists}, commit=False)
 
-    
     # Run that sucker
     print(f'\n{args.num_folds}-fold Eval on {len(subj_ids)} subjects:')
     eval_preds, eval_targets, eval_ids = [], [], []
@@ -139,7 +138,9 @@ def N_fold_eval(args, model, data):
         if len(test_x) != 0:
             model.init_model()
             model.train(train_x, train_y, train_subj_ids=train_subj_ids)
-            test_pred = model(test_x).cpu().numpy()
+            test_pred = model(test_x)
+            if model.name != 'feature_ml':
+                test_pred = test_pred.cpu().numpy()
 
             print(f'Fold {i+1}: ')
             metrics = eval_utils.get_metrics(test_pred, test_y, task=args.task)
@@ -155,7 +156,7 @@ def N_fold_eval(args, model, data):
     metrics = eval_utils.get_metrics(eval_preds, eval_targets, 
                                      task=args.task)
     
-    wandb_annot_idx = 1
+    wandb_annot_idx = model.labeler_idx
     if wandb.run is not None:
         wandb.log({
             'T_acc': metrics[wandb_annot_idx]['acc'],
@@ -191,16 +192,19 @@ def N_fold_eval(args, model, data):
                                                 task=args.task)
             print("\n--- Frequency Class Predictor ---")
             print_metrics(freq_metrics)
+    
+    return metrics
 
 
 if __name__ == '__main__':
     args = parse_args()
+    set_seed(args)
+    all_metrics = {}
     for i in tqdm(range(args.num_trials)):
         print(f'\n--- Trial {i+1} / {args.num_trials}---')
-        set_seed(args)
 
         eval_model = 'ddnet'   # updrs_dsp, ddnet, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
-        classifier='svr' # Classifier to use for feature_ml: svr, svm, rf, dt
+        classifier = 'svr' # Classifier to use for feature_ml: svr, svm, rf, dt
 
         # Define model and data
         data = data_timeseries.data_timeseries(args.datasets)
@@ -230,8 +234,27 @@ if __name__ == '__main__':
         init_logger(args, model)
 
         # Train/Eval the model
-        N_fold_eval(args, model, data)
+        metrics = {}
+        metrics = N_fold_eval(args, model, data)
+        all_metrics[i] = metrics.copy()
 
         wandb.finish()
+
+    # combine metrics (dict of all labelers metrics) into single avgd dict
+    avg_metrics = {}#{k: {metric: np.mean([m[k][metric] for m in avg_metrics.values()]) for metric in metrics[0].keys()} for k in range(2)}
+    for k in [i for i in all_metrics[0].keys() if isinstance(i, int)]:
+        avg_metrics[k] = {metric: np.mean([m[k][metric] for m in all_metrics.values()]) for metric in metrics[0].keys()}
+        avg_metrics[k]['conf_mat'] = np.mean([m[k]['conf_mat'] for m in all_metrics.values()], axis=0)
+    
+    print(f'\n--- {args.num_trials}-Run Avg RAW Metrics ---')
+    print_metrics(avg_metrics)
+
+    # normalize the confusion matrix
+    for k in avg_metrics.keys():
+        avg_metrics[k]['conf_mat'] = (avg_metrics[k]['conf_mat'] / np.sum(avg_metrics[k]['conf_mat'], axis=1)[:, None]).round(2)
+    
+    print(f'\n--- {args.num_trials}-Run Avg Metrics ---')
+    print_metrics(avg_metrics)
+    
 
     
