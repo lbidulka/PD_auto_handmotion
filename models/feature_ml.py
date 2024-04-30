@@ -17,7 +17,8 @@ class Feature_ML():
         if classifier == 'svr':
             self.classifier = SVR(C=1.0, epsilon=0.2)
         elif classifier == 'dt':
-            self.classifier = tree.DecisionTreeClassifier(class_weight='balanced', max_depth=10)
+            # self.classifier = tree.DecisionTreeClassifier(class_weight='balanced', max_depth=10)
+            self.classifier = tree.DecisionTreeClassifier(max_depth=10)
         elif classifier == 'linear_svm':
             self.classifier = LinearSVC(tol=1e-5)
         elif classifier == 'svm':
@@ -28,13 +29,16 @@ class Feature_ML():
         self.scaler = StandardScaler()
 
         self.labeler_idx = 1
-        self.equalize_class_samples = True
-        self.n_selected_features = 20   # 20
+        self.combine_34 = True
+        self.equalize_class_samples = False
+        self.n_selected_features = 15   # 20
 
         self.min_num_peaks = 7
         self.amp_dec_thresh = 0.9
         self.hesitation_resid_thresh = 0.2
         self.use_ratio = False
+
+        self.sample_format = 'scaled' # unscaled, scaled
 
     def __call__(self, x,):
 
@@ -58,16 +62,19 @@ class Feature_ML():
         else:
             if self.clf == 'svr' or self.clf == 'mlp':
                 for i in range(len(preds)):
-                    if preds[i]<0.5:
-                        preds[i]=0
-                    elif preds[i]<1.5:
-                        preds[i]=1
-                    elif preds[i]<2.5:
-                        preds[i]=2
-                    elif preds[i]<3.5:
-                        preds[i]=3
+                    if preds[i] < 0.5:
+                        preds[i] = 0
+                    elif preds[i] < 1.5:
+                        preds[i] = 1
+                    elif preds[i] < 2.5:
+                        preds[i] = 2
+                    elif self.combine_34:
+                        preds[i] = 3
                     else:
-                        preds[i]=4
+                        if preds[i] < 3.5:
+                            preds[i] = 3
+                        else:
+                            preds[i] = 4
 
         return preds
 
@@ -84,7 +91,7 @@ class Feature_ML():
         # maybe moving these functions to features.py since they are shared between dsp and ml
         self.amp_dec = self.get_amplitude_decrement(self.peak_vals)
         self.slowing = self.get_slowing(self.peak_idxs)
-        self.num_hesitations = self.get_num_hesitations(x)
+        self.num_hesitations = self.get_num_hesitations(self.peak_idxs, self.peak_vals)
         
         # fft
         self.amp_fft_var = features.get_fft_var(x)
@@ -215,71 +222,18 @@ class Feature_ML():
             
         return  np.asarray(feature_vectors)
     
-    def get_num_hesitations(self, x):
-
-        '''
-        alg:
-        
-        1. get peaks and peak idxs
-        2. fit linear model to peak series
-        3. find residuals of linear model for the peaks
-        4. count num peaks with residuals > hesitation threshold
-        '''
-        hesitations_scores = []
-        for i in range(len(x)):
-            if len(self.peak_idxs[i]) < self.min_num_peaks:
-                hesitations_score = 0
-            else:
-                peak_idxs = self.peak_idxs[i]
-                peak_vals = self.peak_vals[i]
-                hesitations = features.get_hesitations(peak_vals, peak_idxs, self.hesitation_resid_thresh)
-                num_hesitations = len(hesitations)
-                # Score logic from MDS-UPDRS:
-                if num_hesitations > 5:
-                    hesitations_score = 3
-                elif num_hesitations >= 3:
-                    hesitations_score = 2
-                elif num_hesitations >= 1:
-                    hesitations_score = 1         
-                else:
-                    hesitations_score = 0
-            hesitations_scores.append(hesitations_score)
+    def get_num_hesitations(self, peak_idxs, peak_vals):
+        hesitations_scores = features.get_UPDRS_num_hesitations(peak_idxs, peak_vals, 
+                                                                self.min_num_peaks, self.hesitation_resid_thresh)
         return hesitations_scores
 
     def get_amplitude_decrement(self, peak_vals):
-        '''
-        Given input timeseries of 4-channel finger
-        '''
-        # get vals around each peak
-        amp_decs = []
-        for i in range(len(peak_vals)):
-            if len(peak_vals[i]) < self.min_num_peaks:
-                amp_dec = 0
-            else:
-                # Check for amplitude decrement, by comparing first 3 peaks avg to last 3 peaks avg
-                init_window = 3
-                final_window = 3
-                init_peak_avg = np.array(peak_vals[i][:init_window]).mean()
-                final_peak_avg = np.array(peak_vals[i][-final_window:]).mean()
-
-                # if ratio of final to initial peak avg is less than threshold, then amp decrement is present
-                amp_dec = 0
-                if final_peak_avg / init_peak_avg < self.amp_dec_thresh:
-                    for j in range(1, len(peak_vals[i])-3):
-                            # find starting idx of amp dec
-                            curr_avg = np.array(peak_vals[i][:j]).mean()
-                            next_avg = np.array(peak_vals[i][j:]).mean()
-                            if next_avg / curr_avg < self.amp_dec_thresh:
-                                if j < 3:   # beginning
-                                    amp_dec = 3
-                                elif j < 7: # middle
-                                    amp_dec = 2
-                                else:       # end
-                                    amp_dec = 1
-            
-            amp_decs.append(amp_dec)
-
+        amp_decs = features.get_UPDRS_amplitude_decrement(peak_vals, self.min_num_peaks, self.amp_dec_thresh)
         return amp_decs
+    
+    def get_slowing(self, peak_idxs):
+        slowings = features.get_UPDRS_slowing(peak_idxs, self.min_num_peaks)
+        return slowings
     
     def get_peaks(self, x):
         peaks, peak_vals = features.get_cycle_peaks(x, keep=10, savgol_win=25)
@@ -289,34 +243,6 @@ class Feature_ML():
         # find valleys between peaks
         valleys, valley_vals = features.get_cycle_valleys(x, self.peak_idxs)
         return valleys, valley_vals
-
-    def get_slowing(self, peak_idxs):
-        ''' 
-        '''            
-        slowings = []
-        for i in range(len(peak_idxs)):
-            if len(peak_idxs[i]) < self.min_num_peaks:
-                slowing = 0
-            else:
-                # find the time between peaks
-                peak_t_diffs = np.diff(peak_idxs[i])
-
-                # fit a line to the peak_t_diffs and get slope
-                t_diff_line = np.polyfit(np.arange(len(peak_t_diffs)), peak_t_diffs, 1)
-                t_trend = t_diff_line[0]
-
-                # if slowing trend is positive, then slowing is present
-                slowing = 0
-                if t_trend >= 0.5:
-                    if t_trend < 1.0:
-                        slowing = 1
-                    elif t_trend < 2.0:
-                        slowing = 2
-                    else:
-                        slowing = 3
-                
-            slowings.append(slowing)
-        return slowings
     
     def information_gain_feature_selection(self, training_data, training_label, n_selected_feature = 20):
                 # information gain
@@ -376,7 +302,7 @@ class Feature_ML():
         # y_aug = np.vstack([y_in, aug_data[1]])
         return x_aug, y_aug
 
-    def train(self, x, y, x_val=None, y_val=None,):
+    def train(self, x, y, train_subj_ids = None, x_val=None, y_val=None,):
         # convert x from numpy to list of numpy
         if isinstance(x, np.ndarray):
             average_input = np.mean(x, axis=2)  # avg over fingers
@@ -402,7 +328,10 @@ class Feature_ML():
 
         label = y[:, self.labeler_idx]
         self.information_gain_feature_selection(features_input, label, n_selected_feature=self.n_selected_features)
+        
+        self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21, 25, 34, 35, 44, 43, 42]
         features_input = features_input[:, self.selected_features]
+
         self.classifier = self.classifier.fit(features_input, label)
 
     def init_model(self,):
