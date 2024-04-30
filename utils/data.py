@@ -1,11 +1,46 @@
 import os
 import numpy as np
 from scipy import io
+import scipy.signal as signal
 
 from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA
 from data.PD4T_expert_labels import PD4T_handmotion_df
 import utils.features as features
 
+
+def scale_to_uniform_len(x, max_seq_len=256, smooth_output=False):
+        '''
+        Scale samples in x to uniform length, either specified or max of all samples
+
+        args:
+        x: n_samples long list of (sample_len, num_kpts, 3) np arrays
+        '''
+        # increase max_seq_len to nearest multiple of 8
+        max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
+        x_rescale = []
+        rescale_ratios = []
+        for i, sample in enumerate(x):
+            # interpolate all dims of each channel
+            interp_data = []
+            for j in range(sample.shape[1]):
+                start = [0 for i in range(sample.shape[2])]
+                stop = [sample.shape[0] for i in range(sample.shape[2])]
+                xvals = np.linspace(start, stop, max_seq_len)
+                _interp_data = [np.interp(xvals[:,k], np.arange(sample.shape[0]), sample[:,j,k]) for k in range(sample.shape[2])]
+                interp_data.append(np.stack(_interp_data, axis=1))
+            rescale_ratios.append(xvals.shape[0] / sample.shape[0])
+            interp_data = np.stack(interp_data, axis=1)
+            x_rescale.append(interp_data)
+        x_rescale = np.array(x_rescale)
+        rescale_ratios = np.array(rescale_ratios)
+        # smooth output if desired
+        if smooth_output:
+            smooth_win = max(max_seq_len // 50, 3)
+            for i, sample in enumerate(x_rescale):
+                for j in range(sample.shape[1]):
+                    for k in range(sample.shape[2]):
+                        sample[:,j,k] = signal.savgol_filter(sample[:,j,k], smooth_win, 3)
+        return x_rescale, rescale_ratios
 
 def make_subj_folds(subj_ids, N, data,
                     datasets,
@@ -35,7 +70,9 @@ def make_subj_folds(subj_ids, N, data,
 
     # TEMP: randomly reshuffle until distribution is roughly balanced
     print('Shuffling fold subjs until balanced label distribution is *roughly* achieved...')
-    if datasets == 'CAMERA':
+    if N >= 5:
+        off_avg_tol = [10e3, 10e3, 10e3, 10e3]
+    elif datasets == 'CAMERA':
         off_avg_tol = [2, 2, 2, 2]
     elif datasets == 'PD4T':
         off_avg_tol = [30, 30, 30, 3.5]
@@ -85,14 +122,18 @@ def make_subj_folds(subj_ids, N, data,
         # print(f'Avg distribution: {total_dist / N}')
         iters += 1
 
-    print('Label distribution across folds:')
+    print('\nLabel distribution across folds:')
     for i, dist in enumerate(eval_fold_dists):
         print(f'Fold {i+1}: {dist}')
     
     # check total distribution
     total_dist = np.sum(eval_fold_dists, axis=0)
-    print(f'Total distribution: {total_dist}')
+    print(f'-------- \nTotal distribution: {total_dist}')
     print(f'Avg distribution: {total_dist / N}')
+
+    # print('\nDiffs from interfold avg:')
+    # for i, dist in enumerate(eval_fold_dists):
+    #         print(f'Fold {i+1}: {dist - (total_dist/N)}')
 
     return eval_folds, eval_fold_dists
 
@@ -193,6 +234,10 @@ def balance_eval_split(x_train, x_test, y_train, y_test,
         [len(y_train[y_train[:,weight_annot_idx] == t]) for t in np.unique(y_train)])
     test_class_cnt = np.array(
         [len(y_test[y_test[:,weight_annot_idx] == t]) for t in np.unique(y_test)])
+    
+    # print out class counts
+    print('Train class counts: ', train_class_cnt)
+    print('Test/Val class counts: ', test_class_cnt)
 
     return x_train, x_test, y_train, y_test, subj_ids_train, subj_ids_test
 

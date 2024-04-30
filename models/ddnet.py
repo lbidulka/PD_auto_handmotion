@@ -4,13 +4,11 @@ import torch
 import sys
 import math
 import numpy as np
-from scipy.spatial.distance import cdist
-from scipy.signal import medfilt
-import scipy.ndimage.interpolation as inter
+from sklearn.feature_selection import mutual_info_regression
+from sklearn.preprocessing import StandardScaler
 
 from .base_deepnet import Base_DeepNet
 import utils.dataloader as loader
-import utils.loss
 import utils.focal_loss
 import utils.features
 
@@ -30,16 +28,16 @@ class DDNet(Base_DeepNet):
         self.sample_format = 'scaled_kpt'   # input data format: 'scaled_kpt', 'unscaled_kpt', 'scaled', 'unscaled'
         self.combine_34 = True              # combine classes 3/4 to label 3?
         self.shuffle = True
-        self.drop_last = True
+        self.drop_last = False
         self.device = torch.device(device) #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.num_workers = 0
         self.print_loss = True
         self.print_epochs = 1
 
-        self.flip_L_to_R = False  # swap all L hands to R hands
+        self.flip_L_to_R = True  # swap all L hands to R hands
 
         self.full_seq = True # use full sequence?
-        # self.input_kpts = [0, 8, 12, 16, 20]    # wrist and all finger tips
+        # self.input_kpts = [0, 8, 12, 16, 20] 5   # wrist and all finger tips
         self.input_kpts = [i for i in range(21)]    # all kpts
 
         if task == 'binclass':
@@ -52,10 +50,13 @@ class DDNet(Base_DeepNet):
                 self.feat_d = 210
             else:
                 self.feat_d = 10 #210   # flat JCD len
-            self.filters = 32
+            
+            self.filters = 16
+            self.num_linear = 1 # number of linear layers after conv blocks
             self.m_branch = True  # Use motion branch?
-            self.f_branch = False  # Use handcrafted feature branch?
-            if self.f_branch: self.use_ratio = True
+            self.f_branch = True  # Use handcrafted feature branch?
+            
+            if self.sample_format == 'scaled_kpt': self.use_ratio = True
 
             if self.full_seq:
                 self.frame_l = 256 # max len for CAMERA = 1467
@@ -64,40 +65,42 @@ class DDNet(Base_DeepNet):
 
             # Training params
             self.selection_metric = 'loss'    # f1, loss
-            self.val_frac = 0.30
+            self.val_frac = 0.3
             if self.datasets == 'PD4T':
                 self.batch_size = 64
                 self.num_epochs = 50
                 self.lr = 5e-4
             elif self.datasets == 'CAMERA,PD4T' or self.datasets == 'PD4T,CAMERA':
-                self.batch_size = 64
+                self.batch_size = 128
                 self.num_epochs = 50
-                self.lr = 5e-4
+                self.lr = 1e-3
             else:
                 if self.full_seq:
-                    self.batch_size = 32
+                    self.batch_size = 64
                     self.num_epochs = 50
                     self.lr = 5e-4
                 else:
                     self.batch_size = 64
-                    self.num_epochs = 35
+                    self.num_epochs = 1 #50
                     self.lr = 5e-4
-            # self.criterion = 'CrossEntropy'
+            # self.loss_type = 'CrossEntropy'
             self.loss_type = 'Focal'
-            self.focal_gamma = 1
+            self.focal_gamma = 2
 
             self.scheduler_type = None #'cosine'
-            self.scheduler_lr_min = 1e-6
-            self.scheduler_T_max = self.num_epochs//2
+            self.scheduler_lr_min = 1e-5
+            self.scheduler_T_max = int(self.num_epochs*2)
+            self.print_lr = False
 
-            self.transforms = [loader.noise_rand, loader.scale_rand]
-            self.transforms_p = [0.9, 0.9]
+            self.transforms = [loader.noise_rand,] # loader.scale_rand,]# loader.trim_rand]
+            self.transforms_p = [0.9,] # 0.9,]# 0.0]
+            self.f_scaler = StandardScaler()    # handcrafted feature normalizer
         
         self._build_model()
     
     def _build_model(self):
         self.model = DDNet_Original(self.frame_l, self.joint_n, self.joint_d, self.feat_d, self.filters, self.clc, 
-                                    self.sample_format, self.input_kpts, self.m_branch, self.f_branch)
+                                    self.sample_format, self.input_kpts, self.m_branch, self.f_branch, self.num_linear)
         self.model.to(self.device)
         self._build_criterion()
         if self.scheduler_type == 'cosine':
@@ -123,16 +126,36 @@ class DDNet(Base_DeepNet):
             # split into as many clips as possible
             vid_clips = self.make_clips(x, odd_clip_min_ratio=0.2)
         else:
-            vid_clips = torch.tensor(x, dtype=torch.float32).unsqueeze(1)
+            vid_clips = torch.tensor(x, dtype=torch.float32)
+        x_clips = self.norm_input(vid_clips)
+
+        # Get handcraft feats and insert into input, if required
+        if self.model.f_branch:
+            rescale_ratios = x_clips[:, -1, 0, :1]
+            hand_feats = self.get_handcraft_features(x_clips[:, :-1]) if self.use_ratio else self.model.get_handcraft_features(x_clips)
+            hand_feats = np.concatenate((hand_feats, rescale_ratios), axis=1)
+
+            # normalization
+            hand_feats = self.f_scaler.transform(hand_feats)
+            hand_feats = torch.tensor(hand_feats, device=x_clips.device).float()
+
+            # pad and reshape to match model input
+            hand_dims = x_clips[0,0].flatten().shape[0]
+            pad = torch.ones(hand_feats.shape[0], hand_dims - hand_feats.shape[1])*-99
+            hand_feats = torch.cat([hand_feats, pad], dim=1).reshape(-1, 1, x_clips.shape[2], x_clips.shape[3])
+            # insert at 2nd last position
+            x_clips = torch.cat([x_clips[:,:-1], hand_feats, x_clips[:,-1:]], dim=1)
+
+        if self.full_seq:
+            x_clips = x_clips.unsqueeze(1)
 
         # Get avg pred over all clips in each input sample
         self.model.eval()
         preds_all_clips = []
-        for clips in vid_clips:
+        for clips in x_clips:
             preds_clip = []
             for clip in clips:
-                clip = self.norm_input(clip.unsqueeze(0))
-                clip = clip.to(self.device)
+                clip = clip.to(self.device).unsqueeze(0)
                 with torch.no_grad():
                     logits = self.model(clip)
 
@@ -161,44 +184,25 @@ class DDNet(Base_DeepNet):
         '''
         Normalize input clips: [B, # frames, J, D]
         '''
-        # if self.full_seq:
-        #     # get final frame index for each sample, ie first frame where == (0,0,0)
-        #     is_zero = (x == 0).all(dim=3).all(dim=2)
-        #     x_seq_last_idxs = torch.max(is_zero, dim=1)[1]
+        for i, clip in enumerate(x):
+            if self.use_ratio:
+                clip = clip[:-1]
 
-        #     # DEBUG: trim actual sequence to max len if too long
-        #     for i, clip in enumerate(x):
-        #         if x_seq_last_idxs[i] > self.frame_l:
-        #             # set early frames to 0
-        #             x[i, x_seq_last_idxs[i] - self.frame_l:] = 0
-        #             # shift first non-zero frame to start
-        #             # trim total length to frame_l
-
-        # swap all L hands to R hands
-        if self.flip_L_to_R:
-            for i, clip in enumerate(x):
-                # if self.full_seq:
-                #     thumb_x = ((clip[:x_seq_last_idxs[i] + 1,4,0] + clip[:x_seq_last_idxs[i] + 1,3,0] + clip[:x_seq_last_idxs[i] + 1,2,0] + clip[:x_seq_last_idxs[i] + 1,1,0]) / 4).mean(0)
-                #     root_x = clip[:x_seq_last_idxs[i] + 1,0,0].mean(0)
-                # else: 
+            # swap all L hands to R hands if needed
+            if self.flip_L_to_R:
+                # check cross prod of index-root and pinky-root
+                cross = torch.cross(clip[:,5] - clip[:,0], clip[:,17] - clip[:,0], dim=1).mean(0)
+                # check thumb pos w.r.t. root
                 thumb_x = ((clip[:,4,0] + clip[:,3,0] + clip[:,2,0] + clip[:,1,0]) / 4).mean(0)
                 root_x = clip[:,0,0].mean(0)
                 if thumb_x < root_x:
-                    x[i,:,:,0] *= -1
-
-        # normalize size & mean
-        for i, clip in enumerate(x):
-            # if self.full_seq:
-            #     # palm size
-            #     wrist = clip[:x_seq_last_idxs[i],0]
-            #     palm_vector = ((clip[:x_seq_last_idxs[i],5] - wrist) + (clip[:x_seq_last_idxs[i],9] - wrist) + (clip[:x_seq_last_idxs[i],13] - wrist) + (clip[:x_seq_last_idxs[i],17] - wrist)) / 4
-            #     palm_size = np.linalg.norm(palm_vector, axis=1).reshape(-1,1,1)
-            #     # mean root joint 
-            #     mean_root = clip[:x_seq_last_idxs[i],0].mean(0)
-                
-            #     x[i,:x_seq_last_idxs[i]] /= palm_size
-            #     x[i,:x_seq_last_idxs[i]] -= mean_root
-            # else:
+                    clip[:,:,0] *= -1
+                    if self.use_ratio:
+                        x[i,:-1,:,0] *= -1
+                    else:
+                        x[i,:,:,0] *= -1
+           
+            # normalize size & mean
             # palm size
             wrist = clip[:,0]
             palm_vector = ((clip[:,5] - wrist) + (clip[:,9] - wrist) + (clip[:,13] - wrist) + (clip[:,17] - wrist)) / 4
@@ -207,8 +211,13 @@ class DDNet(Base_DeepNet):
             palm_size[palm_size == 0] = 1
             # mean root joint
             mean_root = clip[:,0].mean(0)
-            x[i] /= palm_size
-            x[i] -= mean_root
+
+            if self.use_ratio:
+                x[i,:-1] /= palm_size
+                x[i,:-1] -= mean_root
+            else:
+                x[i] /= palm_size
+                x[i] -= mean_root
 
         return x
 
@@ -242,29 +251,132 @@ class DDNet(Base_DeepNet):
         
         return vid_clips
 
+    def make_trainval_sets(self, x_train, y_train, x_val, y_val):
+        '''
+        Override to specify frame length for handcraft feature fusion
+        '''
+        trainset = loader.CustomTensorDataset(tensors=(x_train, y_train), 
+                                                    transforms=self.transforms, 
+                                                    transforms_p=self.transforms_p, 
+                                                    use_ratio=self.use_ratio,
+                                                    seq_len=self.frame_l)
+        valset = loader.CustomTensorDataset(tensors=(x_val, y_val), 
+                                                transforms=self.transforms, 
+                                                transforms_p=self.transforms_p, 
+                                                use_ratio=self.use_ratio,
+                                                seq_len=self.frame_l)
+        return trainset, valset
+
+    def information_gain_feature_selection(self, training_data, training_label, n_selected_feature = 20):
+        '''
+        information gain feature selection
+        '''
+        ig = mutual_info_regression(training_data, training_label)
+        
+        # Create a dictionary of feature importance scores
+        feature_scores = {}
+        for i in range(len(ig)):
+            feature_scores[i] = ig[i]
+        # Sort the features by importance score in descending order
+        sorted_features = sorted(feature_scores.items(), key=lambda x: x[1], reverse=True)
+
+        selected_features_ids = [feat for feat, score in sorted_features[:n_selected_feature]]
+        return selected_features_ids
+
+    def get_handcraft_features(self, P, labels=None, info_gain=True, num_info_feats=20):
+        '''
+        Compute some handcrafted features given the input batch of pose series P
+
+        args:
+            P: (B, frame_l, joint_n, joint_d) tensor
+        '''
+        # Get finger-palm distances & cycle peaks/valleys/idxs
+        dists = utils.features.get_finger_palm_distance(P.cpu())
+        dists = [dist.mean(axis=1) for dist in dists]
+        peak_idxs, peak_vals = utils.features.get_cycle_peaks(dists, keep=10, savgol_win=5, prominence=0.10, min_peak_dist=10)
+        valley_idxs, valley_vals = utils.features.get_cycle_valleys(dists, peak_idxs, savgol_win=5)
+        # peak_idxs, peak_vals, valley_idxs, valley_vals, peak_width, valley_width = utils.features.adjust_peaks(dists, peak_idxs, peak_vals, valley_idxs, valley_vals)
+        # peak_idxs = np.array(peak_idxs)
+        # peak_vals = np.array(peak_vals)
+
+        min_num_peaks = 7
+        hesitation_resid_thresh = 0.2
+        amp_dec_thresh = 0.9
+
+        # UPDRS features
+        num_hesitations = utils.features.get_UPDRS_num_hesitations(peak_idxs, peak_vals, 
+                                                                min_num_peaks, hesitation_resid_thresh, score=False)
+        amp_dec_idxs = utils.features.get_UPDRS_amplitude_decrement(peak_vals, min_num_peaks, 
+                                                                    amp_dec_thresh, score=False)
+        slowings = utils.features.get_UPDRS_slowing(peak_idxs, min_num_peaks, score=False)
+        
+        # Catch 22 features
+        catch24_feats = utils.features.get_catch22_features(dists)
+        
+        # Cycle features
+        cycle_feats = utils.features.get_cycle_features(dists, peak_idxs, peak_vals, valley_vals)
+        effective_distance_completed_mean = [np.mean(eff_dist) for eff_dist in cycle_feats[0]]
+        effective_distance_completed_std = [np.std(eff_dist) for eff_dist in cycle_feats[0]]
+        total_distance_travelled_mean = [np.mean(dist) for dist in cycle_feats[1]]
+        total_distance_travelled_std = [np.std(dist) for dist in cycle_feats[1]]
+        cycle_times_mean = [np.mean(times) for times in cycle_feats[2]]
+        cycle_times_std = [np.std(times) for times in cycle_feats[2]]
+        total_average_speed_mean = [np.mean(spd) for spd in cycle_feats[3]]
+        total_average_speed_std = [np.std(spd) for spd in cycle_feats[3]]
+        smoothness_mean = [np.mean(s) for s in cycle_feats[5]]
+        smoothness_std = [np.std(s) for s in cycle_feats[5]]
+
+        # Other features
+        amp_fft_var = utils.features.get_fft_var(dists)
+
+        if info_gain:
+            # combine all features into vector for each sample
+            all_features = []
+            for i in range(len(dists)):
+                all_features.append([])
+                if len(cycle_feats[0][i]) > 0:
+                    for c24_feat in catch24_feats[i]:
+                        all_features[i].append(c24_feat)
+                    all_features[i].append(num_hesitations[i])
+                    all_features[i].append(amp_dec_idxs[i])
+                    all_features[i].append(slowings[i])
+                    all_features[i].append(effective_distance_completed_mean[i])
+                    all_features[i].append(effective_distance_completed_std[i])
+                    all_features[i].append(total_distance_travelled_mean[i])
+                    all_features[i].append(total_distance_travelled_std[i])
+                    all_features[i].append(cycle_times_mean[i])
+                    all_features[i].append(cycle_times_std[i])
+                    all_features[i].append(total_average_speed_mean[i])
+                    all_features[i].append(total_average_speed_std[i])
+                    all_features[i].append(smoothness_mean[i])
+                    all_features[i].append(smoothness_std[i])
+                    all_features[i].append(amp_fft_var[i])
+                else: 
+                    all_features[i] = [0]*(14 + 24)
+            all_features = np.array(all_features)
+            if labels is not None:
+                self.best_features_ids = self.information_gain_feature_selection(all_features, labels, num_info_feats)
+            features = torch.tensor(all_features[:,self.best_features_ids], device=P.device).float()
+        else:
+            UPDRS_feats = torch.tensor([num_hesitations, amp_dec_idxs, slowings], device=P.device).permute(1,0).float()
+            catch24_feats_subset = [0, 1, 2, 4, 6, 10, 15, 21]
+            catch24_feats = [[feats[i] for i in catch24_feats_subset] for feats in catch24_feats]
+            cycle_feats = np.array([effective_distance_completed_mean, total_average_speed_std, smoothness_mean]).swapaxes(0,1)
+            # features = torch.cat([UPDRS_feats, torch.tensor(catch24_feats, device=P.device),], axis=1).float()
+            features = torch.cat([UPDRS_feats, torch.tensor(catch24_feats), torch.tensor(cycle_feats)], axis=1).float()
+        
+        if torch.isnan(features).any():
+            features[torch.isnan(features)] = 0
+        return features
+
     def train(self, x, y, 
               train_subj_ids=None,
               x_val=None, y_val=None):
         '''
         '''
-        # if self.full_seq:
-        #     # change max index padding to 0 padding
-        #     x_clips = x
-        #     # set all frames after last frame to 0
-        #     idx_mask = (x == x[:,-1:]).all(axis=(2,3))
-        #     x_clips[idx_mask] = 0            
-        #     y_clips = y
-
-        #     ids_clips = train_subj_ids
-        # else:
-            
         # make clips
         if self.sample_format == 'unscaled_kpt':
             vid_clips = self.make_clips(x)
-            
-            # vid_clips = [
-            #     [clip for clip in clips if clip.shape[0] == self.frame_l] for clips in vid_clips
-            # ]
             vid_clips_labels = [
                 [label for clip in clips] for clips, label in zip(vid_clips, y)
             ]
@@ -286,6 +398,25 @@ class DDNet(Base_DeepNet):
             ids_clips = train_subj_ids
 
         x_clips = self.norm_input(torch.from_numpy(x_clips).float())
+
+        # precompute handcrafted features
+        if self.model.f_branch:
+            rescale_ratios = x_clips[:, -1, 0, :1]
+            hand_feats = self.get_handcraft_features(x_clips[:, :-1], y_clips[:,self.labeler_idx]) if self.use_ratio else self.get_handcraft_features(x_clips, y_clips[:,self.labeler_idx])
+            hand_feats = np.concatenate((hand_feats, rescale_ratios), axis=1)
+
+            # normalization
+            self.f_scaler.fit(hand_feats)
+            hand_feats = self.f_scaler.transform(hand_feats)
+            hand_feats = torch.tensor(hand_feats, device=x_clips.device).float()
+
+            # pad and reshape to match model input
+            hand_dims = x_clips[0,0].flatten().shape[0]
+            pad = torch.ones(hand_feats.shape[0], hand_dims - hand_feats.shape[1])*-99
+            hand_feats = torch.cat([hand_feats, pad], dim=1).reshape(-1, 1, x_clips.shape[2], x_clips.shape[3])
+            # insert at 2nd last position
+            x_clips = torch.cat([x_clips[:,:-1], hand_feats, x_clips[:,-1:]], dim=1)
+
         super().train(x_clips, y_clips, train_subj_ids=ids_clips,)
 
 def poses_diff(x):
@@ -321,14 +452,8 @@ def get_CG(p, joint_n, frame_l):
     M = []
     # upper triangle index with offset 1, which means upper triangle without diagonal
     iu = torch.triu_indices(joint_n, joint_n, 1)
-    for f in range(frame_l):
-        # iterate all frames, calc all frame's JCD Matrix
-        # p[f].shape (15,2)
-        d_m = torch.cdist(p[f], p[f], p=2)
-        d_m = d_m[(iu[0], iu[1])]
-        # the upper triangle of Matrix and then flattned to a vector. Shape(105)
-        M.append(d_m)
-    M = torch.stack(M)
+    dm = torch.cdist(p, p, p=2)
+    M = dm[:, iu[0], iu[1]]
     M = norm_scale(M)  # normalize
     return M
 
@@ -399,7 +524,8 @@ class spatialDropout1D(nn.Module):
 class DDNet_Original(nn.Module):
     def __init__(self, frame_l, joint_n, joint_d, feat_d, filters, class_num, 
                  sample_format, input_kpts,
-                 m_branch=True, f_branch=False):
+                 m_branch=True, f_branch=False,
+                 num_linear=1):
         super(DDNet_Original, self).__init__()
         self.frame_l = frame_l
         self.joint_n = joint_n
@@ -411,8 +537,9 @@ class DDNet_Original(nn.Module):
         self.input_kpts = input_kpts
         self.m_branch = m_branch
         self.f_branch = f_branch
+        self.num_linear = num_linear
 
-        self.num_hand_features = 4
+        self.num_hand_features = 21 #15
 
         # JCD part
         self.jcd_conv1 = nn.Sequential(
@@ -493,19 +620,24 @@ class DDNet_Original(nn.Module):
             d1D(self.lin1_in, 128),
             nn.Dropout(0.25)
         )
-        self.linear2 = nn.Sequential(
-            d1D(128, 128),
-            nn.Dropout(0.5)
-        )
+        for i in range(self.num_linear-1):
+            setattr(self, f'linear{i+2}', nn.Sequential(
+                d1D(128, 128),
+                nn.Dropout(0.25)
+            ))
 
-        self.linear3 = nn.Linear(128, class_num)
+        self.linear_out = nn.Linear(128, class_num)
 
     def forward(self, P, M=None):
         if self.sample_format == 'scaled_kpt':
             # remove rescale ratio from end of sample
-            rescale_ratios = P[:, -1, 0, 0]
-            P = P[:, :-1,]
-        P_og = P.detach().clone()
+            # rescale_ratios = P[:, -1, 0, 0]
+            if self.f_branch:
+                hand_feats = P[:, -2].reshape(P.shape[0], -1)[:, :self.num_hand_features]
+                hand_feats = self.f_embed(hand_feats)
+
+            P = P[:, :self.frame_l]
+        # P_og = P.detach().clone()
         
         # Only use desired kpts
         P = P[:, :, self.input_kpts]
@@ -557,42 +689,16 @@ class DDNet_Original(nn.Module):
         x = torch.max(x, dim=1).values
 
         if self.f_branch:
-            # Get, embed, and fuse handcrafted features from pose series
-            rescale_ratios = rescale_ratios.unsqueeze(1) #.repeat([1, 10])
-            hand_feats = self.get_handcraft_features(P_og).to(rescale_ratios.device)
-            hand_feats = torch.cat((hand_feats, rescale_ratios), dim=1)
+        #     # Get, embed, and fuse handcrafted features from pose series
+        #     rescale_ratios = rescale_ratios.unsqueeze(1) #.repeat([1, 10])
+        #     hand_feats = self.get_handcraft_features(P_og)
+        #     hand_feats = torch.cat((hand_feats, rescale_ratios), dim=1)
 
-            hand_feats = self.f_embed(hand_feats)
+        #     hand_feats = self.f_embed(hand_feats)
             x = torch.cat((x, hand_feats), dim=1)
 
-        x = self.linear1(x)
-        # x = self.linear2(x)
-        x = self.linear3(x)
+        for i in range(self.num_linear):
+            x = getattr(self, f'linear{i+1}')(x)
+
+        x = self.linear_out(x)
         return x
-    
-    def get_handcraft_features(self, P):
-        '''
-        Compute some handcrafted features given the input batch of pose series P
-
-        args:
-            P: (B, frame_l, joint_n, joint_d) tensor
-        '''
-        # UDPRS features from fingertip-palm distances
-        dists = utils.features.get_finger_palm_distance(P.cpu())
-        dists = [dist.mean(axis=1) for dist in dists]
-        peak_idxs, peak_vals = utils.features.get_cycle_peaks(dists, keep=10, savgol_win=5, prominence=0.10, min_peak_dist=10)
-        # peak_idxs = np.array(peak_idxs)
-        # peak_vals = np.array(peak_vals)
-
-        min_num_peaks = 7
-        hesitation_resid_thresh = 0.2
-        amp_dec_thresh = 0.9
-
-        num_hesitations = utils.features.get_UPDRS_num_hesitations(peak_idxs, peak_vals, 
-                                                                min_num_peaks, hesitation_resid_thresh, score=False)
-        amp_dec_idxs = utils.features.get_UPDRS_amplitude_decrement(peak_vals, min_num_peaks, 
-                                                                    amp_dec_thresh, score=False)
-        slowings = utils.features.get_UPDRS_slowing(peak_idxs, min_num_peaks, score=False)
-
-        features = torch.tensor([num_hesitations, amp_dec_idxs, slowings]).permute(1,0).float()
-        return features

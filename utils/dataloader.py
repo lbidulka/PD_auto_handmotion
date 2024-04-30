@@ -1,15 +1,19 @@
 import torch
 import numpy as np
 
+import utils.data as data_utils
+
 class CustomTensorDataset(torch.utils.data.Dataset):
     '''TensorDataset with support of transforms.
     '''
-    def __init__(self, tensors, transforms=None, transforms_p=None, use_ratio=False):
+    def __init__(self, tensors, transforms=None, transforms_p=None, use_ratio=False,
+                 seq_len=-1):
         assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
         self.tensors = tensors
         self.transforms = transforms
         self.transforms_p = transforms_p
         self.use_ratio = use_ratio
+        self.seq_len = seq_len
 
     def __getitem__(self, index):
         x = self.tensors[0][index]
@@ -19,7 +23,7 @@ class CustomTensorDataset(torch.utils.data.Dataset):
                 if torch.rand(1) < transform_p:
                     # dont apply transform to ratio (final entry)
                     if self.use_ratio:
-                        x[:-1], y = transform(x[:-1], y)
+                        x[:self.seq_len], y = transform(x[:self.seq_len], y)
                     else:
                         x, y = transform(x, y)
         return x, y
@@ -39,6 +43,16 @@ def noise_rand(x, y):
 
 def noise_rand_np(x, y):
     return x + np.random.normal(0, 0.02, x.shape), y
+
+def trim_rand(x, y, trim=[10, 10]):
+    '''
+    Randomly trim the input signal (DOES NOT RESCALE TO ORIGINAL LENGTH)
+    '''
+    trim_start = np.random.randint(1, trim[0])
+    trim_end = np.random.randint(1, trim[1])
+    x_rescale, _ = data_utils.scale_to_uniform_len([x[trim_start:-trim_end].cpu().numpy()], x.shape[0], False)
+    x_rescale = torch.tensor(x_rescale[0]).to(x.device)
+    return x_rescale, y
 
 # UPDRS transforms
 def amp_decrement(x, y):

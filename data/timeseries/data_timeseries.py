@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import os
 
+import utils.data as data_utils
+
 class data_timeseries():
     def __init__(self, datasets=None, CATCC_splits_path=None) -> None:
         # self.dataset_path = dataset_path
@@ -81,24 +83,7 @@ class data_timeseries():
         args:
         x: n_samples long list of (sample_len, num_kpts, 3) np arrays
         '''
-        # increase max_seq_len to nearest multiple of 8
-        max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
-        x_rescale = []
-        rescale_ratios = []
-        for i, sample in enumerate(x):
-            # interpolate all dims of each channel
-            interp_data = []
-            for j in range(sample.shape[1]):
-                start = [0 for i in range(sample.shape[2])]
-                stop = [sample.shape[0] for i in range(sample.shape[2])]
-                xvals = np.linspace(start, stop, max_seq_len)
-                _interp_data = [np.interp(xvals[:,k], np.arange(sample.shape[0]), sample[:,j,k]) for k in range(sample.shape[2])]
-                interp_data.append(np.stack(_interp_data, axis=1))
-            rescale_ratios.append(xvals.shape[0] / sample.shape[0])
-            interp_data = np.stack(interp_data, axis=1)
-            x_rescale.append(interp_data)
-        x_rescale = np.array(x_rescale)
-        rescale_ratios = np.array(rescale_ratios)
+        x_rescale, rescale_ratios = data_utils.scale_to_uniform_len(x, max_seq_len)
         return x_rescale, rescale_ratios
 
     def delete_idxs(self, idxs):

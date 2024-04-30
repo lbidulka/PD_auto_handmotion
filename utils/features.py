@@ -44,7 +44,8 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10,
 
     return peak_idxs, peak_vals  
 
-def get_cycle_valleys(x, peak_idxs):
+def get_cycle_valleys(x, peak_idxs, 
+                      savgol_win=25, prominence=0.25, min_peak_dist=60):
     # find valley between peaks
 
     valley_idxs = []
@@ -58,7 +59,7 @@ def get_cycle_valleys(x, peak_idxs):
             data_max = np.max(data)
             data = data_max - data
             data = np.expand_dims(data, 0)
-            valley, valley_val = get_cycle_peaks(data, keep=1, savgol_win=25)
+            valley, valley_val = get_cycle_peaks(data, keep=1, savgol_win=savgol_win, prominence=prominence)
             if len(valley[0]) == 0:
                 valley = int(len(data[0])/2)
                 valley_val = data[0, valley]
