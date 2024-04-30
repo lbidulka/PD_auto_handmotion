@@ -70,6 +70,17 @@ class Base_DeepNet():
             loss = self.criterion(outputs, eval_labels)
         return loss
 
+    def make_trainval_sets(self, x_train, y_train, x_val, y_val):
+        trainset = loader.CustomTensorDataset(tensors=(x_train, y_train), 
+                                                    transforms=self.transforms, 
+                                                    transforms_p=self.transforms_p, 
+                                                    use_ratio=self.use_ratio)
+        valset = loader.CustomTensorDataset(tensors=(x_val, y_val), 
+                                                transforms=self.transforms, 
+                                                transforms_p=self.transforms_p, 
+                                                use_ratio=self.use_ratio)
+        return trainset, valset
+
     def setup_dataset(self, x, y, subj_ids=None):
         '''
         '''
@@ -102,15 +113,16 @@ class Base_DeepNet():
             y_val = y_tensor[val_idxs].numpy()
 
             x_train, x_val, y_train, y_val, train_ids, val_ids = data_utils.balance_eval_split(x_train, x_val, y_train, y_val, 
-                                                                                                subj_ids[train_idxs], subj_ids[val_idxs])
+                                                                                                subj_ids[train_idxs], subj_ids[val_idxs],
+                                                                                                weight_annot_idx=self.labeler_idx)
             # x_train, y_train = data_utils.equalize_class_samples(x_train, y_train)
             
-            x_train = torch.from_numpy(x_train).float()
-            x_val = torch.from_numpy(x_val).float()
-            y_train = torch.from_numpy(y_train).long() if self.task == 'multiclass' else torch.from_numpy(y_train).float()
-            y_val = torch.from_numpy(y_val).long() if self.task == 'multiclass' else torch.from_numpy(y_val).float()
-            train_ids = torch.from_numpy(train_ids).unique()
-            val_ids = torch.from_numpy(val_ids).unique()
+            x_train = torch.tensor(x_train).float()
+            x_val = torch.tensor(x_val).float()
+            y_train = torch.tensor(y_train).long() if self.task == 'multiclass' else torch.tensor(y_train).float()
+            y_val = torch.tensor(y_val).long() if self.task == 'multiclass' else torch.tensor(y_val).float()
+            train_ids = torch.tensor(train_ids).unique()
+            val_ids = torch.tensor(val_ids).unique()
 
             # setup loss w/ class weights if needed
             if self.loss_type == 'Focal':
@@ -120,14 +132,7 @@ class Base_DeepNet():
                 focal_alpha = self.class_weights * (self.clc / torch.linalg.norm(self.class_weights, ord=1))   # norm 
                 self._build_criterion(focal_alpha.to(self.device))
 
-            trainset = loader.CustomTensorDataset(tensors=(x_train, y_train), 
-                                                    transforms=self.transforms, 
-                                                    transforms_p=self.transforms_p, 
-                                                    use_ratio=self.use_ratio)
-            valset = loader.CustomTensorDataset(tensors=(x_val, y_val), 
-                                                    transforms=self.transforms, 
-                                                    transforms_p=self.transforms_p, 
-                                                    use_ratio=self.use_ratio)
+            trainset, valset = self.make_trainval_sets(x_train, y_train, x_val, y_val)
         else:
             trainset, valset = torch.utils.data.random_split(loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), 
                                                                                         transforms=self.transforms,
@@ -169,36 +174,41 @@ class Base_DeepNet():
             trainset = loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), 
                                                   transforms=transforms, 
                                                   transforms_p=transforms_p, 
-                                                  use_ratio=self.use_ratio)
+                                                  use_ratio=self.use_ratio,
+                                                  seq_len=self.seq_len)
             valset = loader.CustomTensorDataset(tensors=(x_val_tensor, y_val_tensor), 
                                                 # transforms=transforms, 
                                                 # transforms_p=transforms_p, 
-                                                use_ratio=self.use_ratio)
+                                                use_ratio=self.use_ratio,
+                                                seq_len=self.seq_len)
             sampler = None
 
+        if 'cuda' in self.device.type:
+            pin_memory = True
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, 
                                                   shuffle=self.shuffle, drop_last=self.drop_last, 
-                                                  sampler=sampler, num_workers=self.num_workers)
+                                                  sampler=sampler, num_workers=self.num_workers,
+                                                  pin_memory=pin_memory)
         valloader = torch.utils.data.DataLoader(valset, batch_size=self.batch_size, 
                                                 shuffle=self.shuffle, drop_last=False, #self.drop_last,
-                                                num_workers=self.num_workers)
+                                                num_workers=self.num_workers, pin_memory=pin_memory)
 
         # Train
         best_model = None
         for epoch in range(self.num_epochs):
-            train_loss = 0
-            train_f1 = 0
+            train_loss, train_f1, train_acc = 0, 0, 0
             self.model.train()
             for i, data in enumerate(trainloader, 0):
                 inputs, labels = data
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
                 self.optimizer.zero_grad()
                 if (inputs.shape[0] == 1):
-                    foo = 5
+                    inputs = torch.cat([inputs, inputs], dim=0)
+                    labels = torch.cat([labels, labels], dim=0)
                 outputs = self.model(inputs)
                 # catch Nan
                 if torch.isnan(outputs).any():
-                    foo = 5
+                    continue
                 loss = self.loss(outputs, labels)
                 train_loss += loss.item()
                 loss.backward()
@@ -206,12 +216,11 @@ class Base_DeepNet():
                 # log metrics
                 if self.task == 'multiclass':
                     preds = torch.argmax(outputs, dim=1).cpu().numpy()
-                    f1 = sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted')
-                    train_f1 += f1
+                    train_f1 += sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted')
+                    train_acc += sklearn.metrics.accuracy_score(labels[:,1].cpu().numpy(), preds)
             # Validate
             self.model.eval()
-            val_loss = 0
-            val_f1 = 0
+            val_loss, val_f1, val_acc = 0, 0, 0
             with torch.no_grad():
                 for data in valloader:
                     inputs, labels = data
@@ -223,34 +232,38 @@ class Base_DeepNet():
                     if self.task == 'multiclass':
                         preds = torch.argmax(outputs, dim=1).cpu().numpy()
                         # make sample weights based on sample weights
-                        if self.class_weights is not None:
-                            f1_sample_weights = self.class_weights[labels[:,1].cpu().numpy()]
-                        else:
-                            f1_sample_weights = None
-                        f1 = sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted',)# sample_weight=f1_sample_weights)
-                        val_f1 += f1
+                        # if self.class_weights is not None:
+                        #     f1_sample_weights = self.class_weights[labels[:,1].cpu().numpy()]
+                        # else:
+                        #     f1_sample_weights = None
+                        val_f1 += sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted',)# sample_weight=f1_sample_weights)
+                        val_acc += sklearn.metrics.accuracy_score(labels[:,1].cpu().numpy(), preds)
             # log
             metrics = {
                 'train': {
                     'loss': train_loss / len(trainloader),
                     'f1': train_f1 / len(trainloader),
+                    'acc': train_acc / len(trainloader),
                 },
                 'val': {
                     'loss': val_loss / len(valloader),
                     'f1': val_f1 / len(valloader),
+                    'acc': val_acc / len(valloader),
                 }
             }
             wandb_log = {
                     'train_loss': metrics['train']['loss'], 'val_loss': metrics['val']['loss'],
                     'train_f1': metrics['train']['f1'], 'val_f1': metrics['val']['f1'],
                 }
-            metrics_str = 'train_loss: {:.3f}, val_loss: {:.3f} | train_f1: {:.3f}, val_f1: {:.3f}'.format(metrics['train']['loss'], 
+            metrics_str = 'loss (train,val): {:.3f}, {:.3f} | f1 (train,val): {:.3f}, {:.3f} | acc (train,val): {:.3f}, {:.3f}'.format(metrics['train']['loss'], 
                                                                                                            metrics['val']['loss'], 
                                                                                                            metrics['train']['f1'], 
-                                                                                                           metrics['val']['f1'])
+                                                                                                           metrics['val']['f1'],
+                                                                                                           metrics['train']['acc'], 
+                                                                                                           metrics['val']['acc'])
             if self.print_loss and (epoch % self.print_epochs == 0):
                 print(f'|| Epoch {epoch} ||  ' + metrics_str)
-                if self.scheduler is not None:
+                if self.scheduler is not None and self.print_lr:
                     print(f'|| LR: {self.scheduler.get_last_lr()[0]:.6f}')
 
             # Save best model
@@ -265,7 +278,7 @@ class Base_DeepNet():
                 best_val_metric = metrics['val'][self.selection_metric]
                 best_metrics = metrics
                 best_model = self.model.state_dict()
-                print(f'                          ---> New best saved @ Ep: {epoch}, ' + metrics_str)
+                print(f'                          ---> New best saved @ Ep {epoch}: ' + metrics_str)
             wandb_log.update({
                 'best_train_f1': best_metrics['train']['f1'], 'best_val_f1': best_metrics['val']['f1'],
             })
