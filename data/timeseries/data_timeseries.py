@@ -133,6 +133,17 @@ class data_timeseries():
                                 axis=1)
         elif format == 'unscaled':
             out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
+            out_x = []
+            for i, ts in enumerate(self.x_unscaled):
+                if i in subj_idxs:
+                    if len(ts)>=256:
+                        out_x.append(ts[:256,:])
+                    else:
+                        temp = np.zeros((256,4))
+                        temp[:len(ts),:] = ts
+                        out_x.append(temp)
+            out_x = np.asarray(out_x)
+
         elif format == 'unscaled_kpt':
             out_x = self.x_kpts_unscaled[subj_idxs] #[ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
         elif format == 'scaled_kpt':

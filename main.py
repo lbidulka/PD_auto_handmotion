@@ -7,8 +7,8 @@ from tqdm import tqdm
 import wandb
 import types
 
-from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp, ddnet
-
+from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, ddnet
+from models.cnn_vae import CnnVae
 import data.timeseries.data_timeseries as data_timeseries
 from utils import evaluation as eval_utils
 from utils import data as data_utils
@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument('--num_folds', default=5, help='Number of folds for N-fold evaluation')   # 5, 10
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
 
-    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -85,8 +85,8 @@ def N_fold_eval(args, model, data):
     '''
     N_fold train/evaluation over all samples. Excluding a few subjects for testing each time.
     '''
-    if model.name == 'feature_ml':
-        data_format = 'scaled'
+    if model.name == 'feature_ml' or 'cnn_vae':
+        data_format = 'unscaled'
         combine_34 = True
     elif model.name == 'ddnet':
         data_format = model.sample_format
@@ -139,13 +139,17 @@ def N_fold_eval(args, model, data):
         if len(test_x) != 0:
             model.init_model()
             model.train(train_x, train_y, train_subj_ids=train_subj_ids)
-            test_pred = model(test_x).cpu().numpy()
+            # model.cuda()
+            test_x = np.mean(test_x, axis=2)
+            x_tensor = torch.from_numpy(test_x).float()
+            test_pred, mu, logvar, z, x_decoded = model(x_tensor.cuda())
+            _, y_pred = torch.max(test_pred, -1)
 
             print(f'Fold {i+1}: ')
-            metrics = eval_utils.get_metrics(test_pred, test_y, task=args.task)
+            metrics = eval_utils.get_metrics(y_pred.detach().cpu().numpy(), test_y, task=args.task)
             print_metrics(metrics)
 
-            eval_preds.append(test_pred.reshape(-1))
+            eval_preds.append(y_pred.detach().cpu().numpy().reshape(-1))
             eval_targets.append(test_y)
             eval_ids.append(test_subj_ids)
     
@@ -199,7 +203,7 @@ if __name__ == '__main__':
         print(f'\n--- Trial {i+1} / {args.num_trials}---')
         set_seed(args)
 
-        eval_model = 'ddnet'   # updrs_dsp, ddnet, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
+        eval_model = 'cnn_vae'   # updrs_dsp, ddnet, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp
         classifier='svr' # Classifier to use for feature_ml: svr, svm, rf, dt
 
         # Define model and data
@@ -224,6 +228,8 @@ if __name__ == '__main__':
         elif eval_model == 'simple_cnn':
             model = simple_cnn.SimpleCNN(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
                                         task=args.task,)
+        elif eval_model == 'cnn_vae':
+            model = CnnVae(task=args.task, datasets=args.datasets, device=args.device, length=256, nclasses=4, latent_size=100, transition_channels=4)
         else:
             raise NotImplementedError
 
