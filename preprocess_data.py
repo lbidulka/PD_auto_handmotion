@@ -13,8 +13,11 @@ import utils.data as data
 
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
-    parser.add_argument('--dataset', default='CAMERA', help='Dataset to process')   # CAMERA, PD4T
+    parser.add_argument('--dataset', default='PD4T', help='Dataset to process')   # CAMERA, PD4T
+    parser.add_argument('--UPDRS_task', default='finger_tapping', help='Task to process')  #hand_movement, finger_tapping
     parser.add_argument('--save_out', default=True, help='Save output to file?')   # True False
+
+    parser.add_argument('--smooth', default=True, help='Smooth the data?')   # True False
 
     args = parser.parse_args() 
     return args
@@ -61,7 +64,7 @@ def plot_dists(finger_dists, labels, subj_ids, handednesses, fig_save_path, plot
 if __name__ == '__main__':
     args = parse_args()
     
-    in_folder = f'data/{args.dataset}/pose_series/'
+    in_folder = f'data/{args.dataset}/pose_series/{args.UPDRS_task}/'
     out_folder = f'data/{args.dataset}/timeseries/'
 
     file_list = os.listdir(in_folder)
@@ -72,14 +75,15 @@ if __name__ == '__main__':
     raw_ts, trim_ts, labels, subj_ids, handednesses = data.load_raw_ts(file_list, args, trimming)
     
     # Simple filtering
-    savgol_win = 5
-    savgol_ord = 3
-    for i, ts in enumerate(trim_ts):
-        # trim_ts[i] = signal.savgol_filter(ts, savgol_win, 3)
-        for dim in range(ts.shape[1]):
-            trim_ts[i][:, dim, 0] = signal.savgol_filter(ts[:, dim, 0], savgol_win, savgol_ord)
-            trim_ts[i][:, dim, 1] = signal.savgol_filter(ts[:, dim, 1], savgol_win, savgol_ord)
-            trim_ts[i][:, dim, 2] = signal.savgol_filter(ts[:, dim, 2], savgol_win, savgol_ord)
+    if args.smooth:
+        savgol_win = 5
+        savgol_ord = 3
+        for i, ts in enumerate(trim_ts):
+            # trim_ts[i] = signal.savgol_filter(ts, savgol_win, 3)
+            for dim in range(ts.shape[1]):
+                trim_ts[i][:, dim, 0] = signal.savgol_filter(ts[:, dim, 0], savgol_win, savgol_ord)
+                trim_ts[i][:, dim, 1] = signal.savgol_filter(ts[:, dim, 1], savgol_win, savgol_ord)
+                trim_ts[i][:, dim, 2] = signal.savgol_filter(ts[:, dim, 2], savgol_win, savgol_ord)
 
     # Convert from full hand kpts to 5 channel distance from finger to palm
     finger_dists = features.get_finger_palm_distance(raw_ts)
@@ -91,20 +95,29 @@ if __name__ == '__main__':
         AUTO_TRIM_MASK = [True for subj_id in subj_ids]
     else:
         AUTO_TRIM = True
-        # get mask where ids are present in trimming. IE True at idx if subj_ids[idx] is in trimming
-        AUTO_TRIM_MASK = [subj_id not in trimming.keys() for subj_id in subj_ids]
+        if args.UPDRS_task == 'hand_movement':
+            # get mask where ids are present in trimming. IE True at idx if subj_ids[idx] is in trimming
+            AUTO_TRIM_MASK = [subj_id not in trimming.keys() for subj_id in subj_ids]
+        else:
+            AUTO_TRIM_MASK = [True for subj_id in subj_ids]
         # DEBUG_PEAKS = None
     if AUTO_TRIM:
+        if args.UPDRS_task == 'hand_movement':
+            peak_det_channels = [0,1,2]
+        elif args.UPDRS_task == 'finger_tapping':
+            peak_det_channels = [0,]
+
         finger_dists_trimmed, trim_ts, too_short_mask, DEBUG_PEAKS = data.auto_trim_dist_ts(finger_dists_trimmed, 
                                                                                               trim_ts,
                                                                                               AUTO_TRIM_MASK,
+                                                                                              peak_det_channels,
                                                                                               smooth=False)
     else:
         too_short_mask = [False for i in range(len(subj_ids))]
 
     # Upscale all trimmed samples to same length via interpolation (to length of longest sample)
     # max_seq_len = max([data.shape[0] for data in finger_dists_trimmed])
-    max_seq_len = 1728
+    max_seq_len = 512
     # increase max_seq_len to nearest multiple of 8
     max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
     finger_dists_upscale = []
@@ -123,7 +136,7 @@ if __name__ == '__main__':
     y = np.vstack(labels)
 
     # DEBUG: Plotting
-    figure_save_path = 'outputs/debug/feat_plots/'
+    figure_save_path = f'outputs/debug/feat_plots/{args.UPDRS_task}/'
     PLOT_FIGS = False
     PLOT_FIGS_INTERP = False
     # PLOT_SUBJS = ['36532', '18198', '21696', '34492', '17599', '23284', '35246', '36407']   # Change as desired
@@ -189,7 +202,7 @@ if __name__ == '__main__':
     
     # Save entire dataset to single file
     if args.save_out:
-        out_filepath = os.path.join(out_folder, 'handmotion_all.npz')
+        out_filepath = os.path.join(out_folder, f'{args.UPDRS_task}_all.npz')
         print('\nSaving to file: ', out_filepath)
         train_data_dict = {
             'samples_scaled': np.stack(finger_dists_upscale), 

@@ -13,25 +13,64 @@ try:
         office_file = msoffcrypto.OfficeFile(file)
         office_file.load_key(password=passwd)
         office_file.decrypt(decrypted_workbook)
-    UPDRS_labels_suzie = pd.read_excel(decrypted_workbook, sheet_name='SA', header=2, usecols='A,B,Q,S,Z')
+    UPDRS_labels_suzie = pd.read_excel(decrypted_workbook, sheet_name='SA', header=2, usecols='A,B,F,L,Q,S,Z')
     UPDRS_labels_suzie = UPDRS_labels_suzie.dropna()
     # iterate over and populate the dict
     UPDRS_med_data_SA = {}
     for i, row in UPDRS_labels_suzie.iterrows():
         date = str(row['Date'])[:10].replace('-', '')
-        label = {'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']},
-                                    'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},}
+        # Parse FT label weirdness
+        if '/' in str(row['Right_Collection_UPDRS']):
+            FT_R_label = int(row['Right_Collection_UPDRS'].split('/')[0])
+        else:
+            try:
+                FT_R_label = int(row['Right_Collection_UPDRS'])
+            except:
+                FT_R_label = -1
+        if '/' in str(row['Right_Collection_UPDRS']):
+            FT_L_label = int(row['Left_Collection_UPDRS'].split('/')[0])
+        else:
+            try:
+                FT_L_label = int(row['Left_Collection_UPDRS'])
+            except:
+                FT_L_label = -1
+        label = {
+            'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']}, 
+                              'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},
+            'finger_tapping': {'right_finger_tapping': {date: FT_R_label}, 
+                               'left_finger_tapping': {date: FT_L_label},},
+                }
         UPDRS_med_data_SA[str(row['ID'])] = label
 
     # Clinical UPDRS labels given by Kye Won Park
-    UPDRS_labels_kw = pd.read_excel(decrypted_workbook, sheet_name='KW', header=2, usecols='A,B,M,O,')
+    UPDRS_labels_kw = pd.read_excel(decrypted_workbook, sheet_name='KW', header=2, usecols='A,B,F,I,M,O,')
     UPDRS_labels_kw = UPDRS_labels_kw.dropna()
     # iterate over and populate the dict
     UPDRS_med_data_KW = {}
     for i, row in UPDRS_labels_kw.iterrows():
         date = str(row['Date'])[:10].replace('-', '')
-        label = {'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']},
-                                    'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},}
+        # Parse FT label weirdness
+        if '/' in str(row['Right_Collection_UPDRS']):
+            FT_R_label = int(row['Right_Collection_UPDRS'].split('/')[0])
+        else:
+            try:
+                FT_R_label = int(row['Right_Collection_UPDRS'])
+            except:
+                FT_R_label = -1
+        if '/' in str(row['Right_Collection_UPDRS']):
+            FT_L_label = int(row['Left_Collection_UPDRS'].split('/')[0])
+        else:
+            try:
+                FT_L_label = int(row['Left_Collection_UPDRS'])
+            except:
+                FT_L_label = -1
+
+        label = {
+            'hand_movement': {'right_open_close': {date: row['Right_Open_Close_Collection_UPDRS']}, 
+                              'left_open_close': {date: row['Left_Open_Close_Collection_UPDRS']},},
+            'finger_tapping': {'right_finger_tapping': {date: FT_R_label}, 
+                               'left_finger_tapping': {date: FT_L_label},},
+                }
         UPDRS_med_data_KW[str(row['ID'])] = label
 except:
     print('Failed to load UPDRS labels')
