@@ -5,6 +5,7 @@ import pycatch22
 
 def get_cycle_peaks(x, min_peak_dist=60, keep=10, 
                     savgol_win=10, prominence=0.25, 
+                    min_height=0.35,
                     smooth=True, pad_out=False):
     # find cycle peaks and get avg vals around at peak
     peak_idxs = []
@@ -17,7 +18,7 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10,
             smoothed = signal.savgol_filter((x[i]), savgol_win, 3)
         else:
             smoothed = x[i]
-        peak_idxs.append(signal.find_peaks(smoothed, height=0.35, distance=min_peak_dist, prominence=prominence)[0])
+        peak_idxs.append(signal.find_peaks(smoothed, height=min_height, distance=min_peak_dist, prominence=prominence)[0])
         # avg val around each peak
         peak_window = 2
         peak_vals.append([])
@@ -29,13 +30,15 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10,
         
         # take only top 10 peaks
         if (len(peak_vals[i]) > keep):
-            # get ranked idxs of peak vals
-            peak_vals_top = np.copy(peak_vals[i])
-            peak_vals_top = np.argsort(peak_vals[i])[::-1]
-            rej_idxs = peak_vals_top[keep:]
-            # pop the rejected idxs
-            peak_vals[i] = np.delete(peak_vals[i], rej_idxs)
-            peak_idxs[i] = np.delete(peak_idxs[i], rej_idxs)
+            # # get ranked idxs of peak vals
+            # peak_vals_top = np.copy(peak_vals[i])
+            # peak_vals_top = np.argsort(peak_vals[i])[::-1]
+            # rej_idxs = peak_vals_top[keep:]
+            # # pop the rejected idxs
+            # peak_vals[i] = np.delete(peak_vals[i], rej_idxs)
+            # peak_idxs[i] = np.delete(peak_idxs[i], rej_idxs)
+            peak_vals[i] = peak_vals[i][len(peak_vals[i])-keep:]
+            peak_idxs[i] = peak_idxs[i][len(peak_idxs[i])-keep:]
         # pad output to keep constant length
         if (len(peak_vals[i]) < keep) and pad_out:
             n_pad = keep - len(peak_vals[i])

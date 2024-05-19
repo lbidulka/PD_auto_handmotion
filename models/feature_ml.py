@@ -30,7 +30,7 @@ class Feature_ML():
 
         self.labeler_idx = 1
         self.combine_34 = True
-        self.equalize_class_samples = False
+        self.equalize_class_samples = True
         self.n_selected_features = 15   # 20
 
         self.min_num_peaks = 7
@@ -38,20 +38,31 @@ class Feature_ML():
         self.hesitation_resid_thresh = 0.2
         self.use_ratio = False
 
-        self.sample_format = 'scaled' # unscaled, scaled
+        # self.sample_format = 'scaled' # unscaled, scaled
+        self.sample_format = 'scaled_kpt_hf'
+        if self.sample_format in ['scaled_kpt', 'scaled_kpt_hf']: self.use_ratio = True
 
     def __call__(self, x,):
+        if self.sample_format in ['scaled_kpt_hf',]:
+            x_poses = x[:, :-2]
+            x_ratios = x[:, -1:, 0, 0]
+            x_feats = x[:, -2:-1]
+            x_feats = x_feats.reshape(x_feats.shape[0], -1)
+            # cut off where feats == -99
+            x_feats = x_feats[:, x_feats[0] != -99]
+            # average_input = utils.features.get_finger_palm_distance(x_poses).mean(axis=2)
+            features_input = np.hstack([x_feats, x_ratios])
+        else:
+            # convert x from numpy to list of numpy
+            if isinstance(x, np.ndarray):
+                x = [x[i] for i in range(x.shape[0])]
 
-        # convert x from numpy to list of numpy
-        if isinstance(x, np.ndarray):
-            x = [x[i] for i in range(x.shape[0])]
-
-        # average_input = np.zeros((x.shape[0], x.shape[1]))
-        average_input = []
-        for i in range(len(x)):
-            # average_input[i,:] = x[i].mean(axis = 1)
-            average_input.append(x[i].mean(axis = 1))
-        features_input = self.get_features(average_input)
+            # average_input = np.zeros((x.shape[0], x.shape[1]))
+            average_input = []
+            for i in range(len(x)):
+                # average_input[i,:] = x[i].mean(axis = 1)
+                average_input.append(x[i].mean(axis = 1))
+            features_input = self.get_features(average_input)
         features_input = self.scaler.transform(features_input)
 
         features_input = features_input[:, self.selected_features]
@@ -303,21 +314,27 @@ class Feature_ML():
         return x_aug, y_aug
 
     def train(self, x, y, train_subj_ids = None, x_val=None, y_val=None,):
-        # convert x from numpy to list of numpy
-        if isinstance(x, np.ndarray):
-            average_input = np.mean(x, axis=2)  # avg over fingers
-            average_input, y = self.augment_data(average_input, y)
-            features_input = self.get_features(average_input) # get features
+        # get dists and ratio if needed
+        if self.sample_format in ['scaled_kpt_hf',]:
+            x_poses = x[:, :-2]
+            x_ratios = x[:, -1:, 0, 0]
+            x_feats = x[:, -2:-1]
+            x_feats = x_feats.reshape(x_feats.shape[0], -1)
+            # cut off where feats == -99
+            x_feats = x_feats[:, x_feats[0] != -99]
+            # average_input = utils.features.get_finger_palm_distance(x_poses).mean(axis=2)
+            features_input = np.hstack([x_feats, x_ratios])
+            self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21,  24, 25, 26, 27, 34, 35, -1]
         else:
-            #     x = [x[i] for i in range(x.shape[0])]
-            # Change timeseries to feature vectors
-            # average_input = np.mean(x, axis=2)  # avg over fingers
-            average_input = []
-            # for i in range(len(x)):
-            #     average_input.appenD(x[i].mean(axis = 1))
-            average_input = [x[i].mean(axis = 1) for i in range(len(x))]
-            # average_input, y = self.augment_data(average_input, y)
-            features_input = self.get_features(average_input) # get features
+            # get avg fing dists, then features
+            if isinstance(x, np.ndarray):
+                average_input = np.mean(x, axis=2)  # avg over fingers
+                average_input, y = self.augment_data(average_input, y)
+                features_input = self.get_features(average_input) # get features
+            else:
+                average_input = []
+                average_input = [x[i].mean(axis = 1) for i in range(len(x))]
+                features_input = self.get_features(average_input) # get features
 
         if self.equalize_class_samples:
             features_input, y = utils.data.equalize_class_samples(features_input, y)
@@ -327,9 +344,9 @@ class Feature_ML():
         features_input = self.scaler.transform(features_input)
 
         label = y[:, self.labeler_idx]
-        self.information_gain_feature_selection(features_input, label, n_selected_feature=self.n_selected_features)
+        # self.information_gain_feature_selection(features_input, label, n_selected_feature=self.n_selected_features)
         
-        self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21, 25, 34, 35, 44, 43, 42]
+        # self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21, 25, 34, 35, 44, 43, 42]
         features_input = features_input[:, self.selected_features]
 
         self.classifier = self.classifier.fit(features_input, label)

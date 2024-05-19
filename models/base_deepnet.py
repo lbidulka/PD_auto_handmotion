@@ -41,6 +41,9 @@ class Base_DeepNet():
     def init_model(self):
         self._build_model()
 
+    def get_model_dict(self):
+        return self.model.state_dict()
+
     def loss(self, outputs, labels):
         if self.task == 'binclass':
             # TEMP: to handle multiple labelers, use all one labeler, except for samples with a -1
@@ -114,8 +117,10 @@ class Base_DeepNet():
 
             x_train, x_val, y_train, y_val, train_ids, val_ids = data_utils.balance_eval_split(x_train, x_val, y_train, y_val, 
                                                                                                 subj_ids[train_idxs], subj_ids[val_idxs],
-                                                                                                weight_annot_idx=self.labeler_idx)
-            # x_train, y_train = data_utils.equalize_class_samples(x_train, y_train)
+                                                                                                weight_annot_idx=self.labeler_idx,
+                                                                                                tol=1.0)
+            if self.equalize_class_samples:
+                x_train, y_train = data_utils.equalize_class_samples(x_train, y_train)
             
             x_train = torch.tensor(x_train).float()
             x_val = torch.tensor(x_val).float()
