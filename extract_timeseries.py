@@ -10,25 +10,26 @@ def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--dataset', default='CAMERA', help='Dataset to process')   # CAMERA, PD4T
     parser.add_argument('--data_root', default='./data/', help='Path to video data')
-    parser.add_argument('--UPDRS_task', default='Hand movement', help='Task to process')
+    parser.add_argument('--CAMERA_UPDRS_task', default='finger_tapping', help='CAMERA task to process')  #hand_movement, finger_tapping
+    parser.add_argument('--PD4T_UPDRS_task', default='Hand movement', help='PD4T task to process')  # Hand movement, Finger tapping
     # parser.add_argument('--outputFolder', default='./data/PD4T/pose_series', help='output folder for extracted pose data')
 
     args = parser.parse_args() 
     return args
 
 def extract_CAMERA(args):    
-    PD_action = 'hand_movement'
+    PD_action = args.CAMERA_UPDRS_task
     # PD_action_task = 'right_open_close' #'right_open_close', left_open_close
     debug_imgs = False      # print out pose frames (will make a lot of files)
     # handedness = 'L' if PD_action_task == 'left_open_close' else 'R'
     
-    data = CAMERA_expert_labels.UPDRS_med_data_SA
+    data = CAMERA_expert_labels.UPDRS_med_data_KW
 
     successes = []
     # for id, date in tqdm(data[PD_action][PD_action_task].items()):
     for id in tqdm(data):
         for PD_action_task in data[id][PD_action]:
-            handedness = 'L' if PD_action_task == 'left_open_close' else 'R'
+            handedness = 'L' if 'left' in PD_action_task.lower() else 'R'
             date = list(data[id][PD_action][PD_action_task].keys())[0]
             file = op.join(id, date, PD_action, f'{PD_action_task}.mp4')
             input = '/mnt/teamshare-camera/CAMERA Booth Data/Booth/'
@@ -48,7 +49,7 @@ def extract_CAMERA(args):
             #     print(f'ERR: input file {in_file} does not exist')
 
             vid_path = op.join(input, file)
-            save_path = os.path.join(args.data_root, args.dataset, 'pose_series', ('_').join([id, date, PD_action_task,]))
+            save_path = os.path.join(args.data_root, args.dataset, 'pose_series', PD_action, ('_').join([id, date, PD_action_task,]))
 
             print(f'Processing {vid_path} to {save_path}')
 
@@ -95,11 +96,11 @@ def extract_PD4T(args):
         # }
     
     # get all video names from the data root
-    subj_ids = os.listdir(os.path.join(args.data_root, 'Videos', args.UPDRS_task))
+    subj_ids = os.listdir(os.path.join(args.data_root, args.dataset, 'Videos', args.PD4T_UPDRS_task))
     subj_ids = [subj_id for subj_id in subj_ids if '.' not in subj_id]
     vids = {}
     for subj_id in subj_ids:
-        vid_path = os.listdir(os.path.join(args.data_root, 'Videos', args.UPDRS_task, subj_id))
+        vid_path = os.listdir(os.path.join(args.data_root, args.dataset, 'Videos', args.PD4T_UPDRS_task, subj_id))
         vids[subj_id] = [vid[:-4] for vid in vid_path if '.mp4' in vid]
     
     # trim vids to first 10 keys
@@ -108,9 +109,9 @@ def extract_PD4T(args):
     successes = []
     for subj_id in tqdm(vids.keys()):
         for vid in vids[subj_id]:
-            vid_path = os.path.join(args.data_root, args.dataset, 'Videos', args.UPDRS_task, subj_id, vid+'.mp4')
+            vid_path = os.path.join(args.data_root, args.dataset, 'Videos', args.PD4T_UPDRS_task, subj_id, vid+'.mp4')
             handedness = vid.split('_')[-1].upper()
-            save_path = os.path.join(args.data_root, args.dataset, 'pose_series', ('_').join([vid, subj_id]))
+            save_path = os.path.join(args.data_root, args.dataset, 'pose_series', args.PD4T_UPDRS_task.lower().replace(' ', '_'), ('_').join([vid, subj_id]))
             print(f'Processing {vid_path} to {save_path}')
 
             if op.exists(vid_path):

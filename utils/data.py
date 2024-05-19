@@ -4,7 +4,7 @@ from scipy import io
 import scipy.signal as signal
 
 from data.CAMERA_expert_labels import UPDRS_med_data_KW, UPDRS_med_data_SA
-from data.PD4T_expert_labels import PD4T_handmotion_df
+from data.PD4T_expert_labels import PD4T_handmotion_df, PD4T_fingertapping_df
 import utils.features as features
 
 
@@ -182,7 +182,7 @@ def move_subj_samples(subjs, source, dest):
 
 def balance_eval_split(x_train, x_test, y_train, y_test, 
                        subj_ids_train, subj_ids_test,
-                       tol=0.2, itr_max=20,
+                       tol=0.2, itr_max=10,
                        weight_annot_idx=1):
     '''
     Ensure that test split has somewhat balanced classes
@@ -282,7 +282,7 @@ def load_raw_ts(file_list, args, trimming):
     Loads raw hand pose timeseries, trims them, and returns them as a list along 
     with annotation info
     '''
-    task = 'hand_movement'
+    task = args.UPDRS_task
 
     raw_ts = []
     trim_ts = []
@@ -363,6 +363,8 @@ def get_PD4T_labels_from_df(subj_id, handedness, visit, task):
     '''
     if task == 'hand_movement':
         PD4T_df = PD4T_handmotion_df
+    elif task == 'finger_tapping':
+        PD4T_df = PD4T_fingertapping_df
     else:
         raise ValueError(f"Invalid PD4T task: {task}")
     annot = PD4T_df.loc[(PD4T_df['patient_id'] == subj_id) & (PD4T_df['visit'] == visit) & (PD4T_df['handedness'] == handedness)]
@@ -381,7 +383,10 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
     # check which dicts the combo of subj_id, handedness, and task is in (if any)
     if subj_id in UPDRS_med_data_KW.keys():
         try:
-            label_KW = UPDRS_med_data_KW[subj_id][task][f'{handedness}_open_close'][date]
+            if task == 'hand_movement':
+                label_KW = UPDRS_med_data_KW[subj_id][task][f'{handedness}_open_close'][date]
+            elif task == 'finger_tapping':
+                label_KW = UPDRS_med_data_KW[subj_id][task][f'{handedness}_finger_tapping'][date]
         # Unlabeled annotation
         except: 
             label_KW = -1 
@@ -392,7 +397,10 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
 
     if subj_id in UPDRS_med_data_SA.keys():
         try:
-            label_SA = UPDRS_med_data_SA[subj_id][task][f'{handedness}_open_close'][date]
+            if task == 'hand_movement':
+                label_SA = UPDRS_med_data_SA[subj_id][task][f'{handedness}_open_close'][date]
+            elif task == 'finger_tapping':
+                label_SA = UPDRS_med_data_SA[subj_id][task][f'{handedness}_finger_tapping'][date]
         # Unlabeled annotation
         except:
             label_SA = -1
@@ -408,23 +416,7 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
     
     return [float(label_KW), float(label_SA)]
 
-
-    # if (subj_id in UPDRS_med_data_KW.keys()) or (subj_id in UPDRS_med_data_SA.keys()):
-    #         try:
-    #             label_KW = UPDRS_med_data_KW[subj_id]['hand_movement'][f'{handedness}_open_close'][date]
-    #         except:
-    #             label_KW = -1
-    #         try:
-    #             label_SA = UPDRS_med_data_SA[subj_id]['hand_movement'][f'{handedness}_open_close'][date]
-    #         except:
-    #             label_SA = -1
-            
-    #         if label_KW is None:
-    #             label_KW = -1
-    #         if label_SA is None:
-    #             label_SA = -1
-
-def auto_trim_dist_ts(dist_ts, kpts_ts, trim_mask, num_cycles=10, num_passes=1, smooth=True):
+def auto_trim_dist_ts(dist_ts, kpts_ts, trim_mask, peak_channels=[0,1,2,3], num_cycles=10, num_passes=1, smooth=True):
     '''
     Automatically trim the fingertip-palm distance timeseries to the desired number
     of action cycles
@@ -438,9 +430,10 @@ def auto_trim_dist_ts(dist_ts, kpts_ts, trim_mask, num_cycles=10, num_passes=1, 
             # Only trim if mask is true
             if trim_mask[j]:
                 # check number of peaks
-                peak_idxs, peaks_vals = features.get_cycle_peaks(np.array([ts.mean(1)]), min_peak_dist=None, 
-                                                                keep=10, savgol_win=5, 
-                                                                prominence=0.15, smooth=smooth)
+                avg_ts = ts[:, peak_channels].mean(1)
+                peak_idxs, peaks_vals = features.get_cycle_peaks(np.array([avg_ts]), min_peak_dist=5, 
+                                                                keep=10, savgol_win=3, 
+                                                                prominence=0.10, smooth=smooth)
                 peak_idxs = peak_idxs[0]
                 peaks_vals = peaks_vals[0]
                 start_idx = 0
@@ -453,10 +446,10 @@ def auto_trim_dist_ts(dist_ts, kpts_ts, trim_mask, num_cycles=10, num_passes=1, 
                 else:
                     too_short_mask[j] = False
                     # Too long?
-                    if len(peak_idxs) != num_cycles:
-                        # trim end to end at trough after last peak, trim start to num_cycles cycles before end
-                        end_idx = int(peak_idxs[-1] + np.diff(peak_idxs[-3:-1]).mean() / 2)
-                        start_idx = int(peak_idxs[-num_cycles] -np.diff(peak_idxs[-num_cycles:-num_cycles+3]).mean() / 2)
+                    # if len(peak_idxs) != num_cycles:
+                    # trim end to end at trough after last peak, trim start to num_cycles cycles before end
+                    end_idx = min(int(peak_idxs[-1] + (np.diff(peak_idxs[-3:-1]).mean() / 2)), len(ts))
+                    start_idx = max(int(peak_idxs[-num_cycles] - (np.diff(peak_idxs[-num_cycles:-num_cycles+3]).mean() / 2)), 0)
 
                 # trim kpt and dist series
                 dist_ts_trims[j] = ts[start_idx:end_idx]
