@@ -7,7 +7,7 @@ from tqdm import tqdm
 import wandb
 import types
 
-from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp, ddnet, dist_ddnet
+from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp, ddnet, dist_ddnet, cnn_vae
 
 import data.timeseries.data_timeseries as data_timeseries
 from utils import evaluation as eval_utils
@@ -21,11 +21,11 @@ def parse_args():
     parser.add_argument('--datasets', default='PD4T,CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
-    parser.add_argument('--model', default='dist_ddnet', help='Model to use')   # ddnet, dist_ddnet, feature_ml, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
+    parser.add_argument('--model', default='cnn_vae', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
-    parser.add_argument('--num_trials', default=20, help='Number of trials to run')   # 1, 5, 10
-    parser.add_argument('--num_folds', default=15, help='Number of folds for N-fold evaluation')   # 5, 10
+    parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
+    parser.add_argument('--num_folds', default=10, help='Number of folds for N-fold evaluation')   # 5, 10
     
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
     parser.add_argument('--save_model_path', default='./checkpoints/', help='Path to save models')
@@ -93,7 +93,7 @@ def N_fold_eval(args, model, data):
     if model.name == 'feature_ml':
         data_format = model.sample_format
         combine_34 = model.combine_34
-    elif model.name == 'ddnet':
+    elif model.name in ['ddnet', 'dist_ddnet', 'cnn_vae']:
         data_format = model.sample_format
         combine_34 = model.combine_34
     else:
@@ -233,6 +233,9 @@ if __name__ == '__main__':
             model = ddnet.DDNet(task=args.task, datasets=args.datasets, UPDRS_task=args.UPDRS_task, device=args.device)
         elif eval_model == 'dist_ddnet':
             model = dist_ddnet.DistDDNet(task=args.task, datasets=args.datasets, UPDRS_task=args.UPDRS_task, device=args.device)
+        elif eval_model == 'cnn_vae':
+            model = cnn_vae.CnnVae(task=args.task, datasets=args.datasets, device=args.device, 
+                                   length=256, nclasses=4, latent_size=25, transition_channels=4)
         # FEATURE BASELINES
         elif eval_model == 'feature_ml':
             model = feature_ml.Feature_ML(task=args.task, classifier=classifier)

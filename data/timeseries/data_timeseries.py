@@ -7,6 +7,7 @@ import utils.features
 
 class data_timeseries():
     def __init__(self, datasets=None, UPDRS_task=None) -> None:
+        self.fingertip_kpts = [8, 12, 16, 20]  # all finger tips
         # self.dataset_path = dataset_path
         if datasets is not None:
             self.action = UPDRS_task
@@ -174,7 +175,10 @@ class data_timeseries():
         if combine_34: out_y[out_y == 4] = 3
 
         if format == 'scaled':
-            out_x = self.x[subj_idxs]
+            out_x = self.x_kpts[subj_idxs]
+            palm = out_x[:, :, :1, :]
+            tips = out_x[:, :, self.fingertip_kpts, :]
+            out_x = np.linalg.norm(tips - palm, axis=-1)
             if use_ratio:
                 subj_upscale_ratios = self.upscale_ratios[subj_idxs]
                 out_x = np.append(out_x, 
