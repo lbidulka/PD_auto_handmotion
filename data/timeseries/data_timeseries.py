@@ -6,8 +6,15 @@ import utils.data as data_utils
 import utils.features
 
 class data_timeseries():
-    def __init__(self, datasets=None, UPDRS_task=None) -> None:
+    def __init__(self, datasets=None, UPDRS_task=None, kpts_uniform_len=256) -> None:
         self.fingertip_kpts = [8, 12, 16, 20]  # all finger tips
+        self.kpts_uniform_len = kpts_uniform_len
+
+        self.dataset_framerates = {
+            'PD4T': 25,
+            'CAMERA': 60,
+        }
+
         # self.dataset_path = dataset_path
         if datasets is not None:
             self.action = UPDRS_task
@@ -17,7 +24,7 @@ class data_timeseries():
     def load_dataset_files(self, datasets):
         '''
         '''
-        x, x_unscaled, x_kpts, y, subj_ids, handednesses, upscale_ratios = [], [], [], [], [], [], []
+        x, x_unscaled, x_kpts, y, subj_ids, handednesses, upscale_ratios, fps = [], [], [], [], [], [], [], []
         self.data = []
         for dataset in datasets:
             file_path = f'data/{dataset}/timeseries/{self.action}_all.npz'
@@ -39,12 +46,18 @@ class data_timeseries():
 
             subj_ids.append(self.data[-1]['subj_ids'])
             handednesses.append(self.data[-1]['handednesses'])
-            upscale_ratios.append(self.data[-1]['upscale_ratios'])
+            upscale_ratios.append(self.data[-1]['upscale_ratios'] * (self.dataset_framerates['CAMERA'] / self.dataset_framerates[dataset]))
+            fps.append(self.dataset_framerates[dataset])
+
             
         self.x = np.vstack(x)
         self.x_unscaled = [ts for ts_list in x_unscaled for ts in ts_list]
         self.x_kpts_unscaled = [ts for ts_list in x_kpts for ts in ts_list]
-        self.x_kpts, self.kpts_rescale_ratios = self.scale_to_uniform_len(self.x_kpts_unscaled)
+        self.x_kpts, self.kpts_rescale_ratios = self.scale_to_uniform_len(self.x_kpts_unscaled, seq_len=self.kpts_uniform_len)
+
+        # Adjust rescale ratios according to dataset framerates
+        for i, fps in enumerate(fps):
+            self.kpts_rescale_ratios[i] *= self.dataset_framerates['CAMERA'] / fps
 
         # convert x_kpts to np array by padding with last_idx
         max_len = max([ts.shape[0] for ts in self.x_kpts])
@@ -140,14 +153,14 @@ class data_timeseries():
             features[torch.isnan(features)] = 0
         return features
     
-    def scale_to_uniform_len(self, x, max_seq_len=256):
+    def scale_to_uniform_len(self, x, seq_len=256):
         '''
         Scale samples in x to uniform length, either specified or max of all samples
 
         args:
         x: n_samples long list of (sample_len, num_kpts, 3) np arrays
         '''
-        x_rescale, rescale_ratios = data_utils.scale_to_uniform_len(x, max_seq_len)
+        x_rescale, rescale_ratios = data_utils.scale_to_uniform_len(x, seq_len)
         return x_rescale, rescale_ratios
 
     def delete_idxs(self, idxs):
@@ -184,8 +197,25 @@ class data_timeseries():
                 out_x = np.append(out_x, 
                                 np.repeat(subj_upscale_ratios.reshape(-1,1,1), 4, axis=2), 
                                 axis=1)
+        elif format == 'scaled_hf':
+            out_x = self.x_kpts[subj_idxs]
+            palm = out_x[:, :, :1, :]
+            tips = out_x[:, :, self.fingertip_kpts, :]
+            out_x = np.linalg.norm(tips - palm, axis=-1)
+            # append ratio to last entry
+            subj_rescale_ratios = self.upscale_ratios[subj_idxs]
+            out_x = np.append(out_x, 
+                            np.repeat(subj_rescale_ratios.reshape(-1,1,1), 4, axis=-1), 
+                            axis=1)
+            # pad and reshape handcraft features, then insert at 2nd last position
+            hf = self.handcraft_feats[subj_idxs]
+            hf = hf.reshape(hf.shape[0], -1, 1).repeat([1, 1, 4], 2)
+            # hf = np.append(hf, pad, axis=1).reshape(-1, 1, out_x.shape[2], out_x.shape[3])
+            # insert at 2nd last position
+            out_x = np.concatenate([out_x[:,:-1], hf, out_x[:,-1:]], axis=1)
         elif format == 'unscaled':
             out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
+
         elif format == 'unscaled_kpt':
             out_x = self.x_kpts_unscaled[subj_idxs] #[ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
         elif format == 'scaled_kpt':
