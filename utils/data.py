@@ -87,10 +87,21 @@ def make_subj_folds(subj_ids, N, data,
         eval_folds = []
         eval_fold_labels = []
         eval_fold_dists = []
+
+        # get number of excess subjects, to be added to the first folds
+        _num_extra = len(subj_ids) % N
+        _num_to_add = _num_extra
+
         for i in range(N):
-            num_eval_subjs = len(subj_ids) // N
-            eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
-            
+            # add extra subj until all are allocated
+            if _num_to_add > 0:
+                num_eval_subjs = len(subj_ids) // N + 1
+                _num_to_add -= 1
+                eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
+            else:
+                num_eval_subjs = len(subj_ids) // N 
+                eval_subjs = subj_ids[i*num_eval_subjs + _num_extra:(i+1)*num_eval_subjs + _num_extra]
+
             fold_data = data.get_subj_data(eval_subjs, format=data_format, use_ratio=use_ratio, combine_34=combine_34)
             fold_labels = fold_data[1][:, annot_id]
             label_dist = np.bincount(fold_labels.flatten().astype(int), minlength=4)        
@@ -149,7 +160,9 @@ def equalize_class_samples(x_tensor_in, y_tensor_in, weight_annot_idx=1):
         [len(y_tensor[y_tensor[:,weight_annot_idx] == t]) for t in np.unique(y_tensor)])
     target_count = class_sample_count.max()
     # repeat each class to match target count
-    for t in np.unique(y_tensor):
+    possible_labels = np.unique(y_tensor)
+    possible_labels = possible_labels[possible_labels != -1]
+    for t in possible_labels:
         class_count = len(y_tensor[y_tensor[:,weight_annot_idx] == t])
         if class_count < target_count:
             repeat = int(np.ceil(target_count / class_count))
@@ -191,7 +204,9 @@ def balance_eval_split(x_train, x_test, y_train, y_test,
     iter_max:   max number of iterations to balance classes
     '''    
     # ensure at least 1 sample in each class for testset, move from trainset if necessary
-    for t in np.unique(y_train):
+    possible_labels = np.unique(y_train)
+    possible_labels = possible_labels[possible_labels != -1]
+    for t in possible_labels:
         if len(y_test[y_test[:,weight_annot_idx] == t]) == 0:
             move_idx = np.where(y_train[:,weight_annot_idx] == t)[0][0]
             move_subj = subj_ids_train[move_idx]
@@ -242,7 +257,8 @@ def balance_eval_split(x_train, x_test, y_train, y_test,
     return x_train, x_test, y_train, y_test, subj_ids_train, subj_ids_test
 
 def remove_unlabeled(subj_data, handednesses=None, 
-                     combine_34=True, rej_either=True, rej_annot=None):
+                     combine_34=True, keep_agree=False,
+                     rej_either=True, rej_annot=None):
     '''
     Remove samples with label == -1
     '''
@@ -262,6 +278,10 @@ def remove_unlabeled(subj_data, handednesses=None,
             else:   
                 if all([l == -1 for l in labels]):
                     rej_idxs.append(i)
+        # reject if labels don't agree
+        if keep_agree:
+            if (labels[0] != labels[1]) and (i not in rej_idxs):
+                rej_idxs.append(i)
 
     x_out = np.delete(x, rej_idxs, axis=0)
     y_out = np.delete(y, rej_idxs, axis=0)
@@ -413,7 +433,19 @@ def get_CAMERA_labels_from_dicts(subj_id, handedness, date, task):
 
     else:
         label_SA = -1
-    
+
+    # replace that one bad label from SA
+    try:
+        label_SA_out = float(label_SA)
+    except:
+        label_SA = float(label_SA[0])    
+
+    # Replace any pesky nans
+    if np.isnan(label_KW):
+        label_KW = -1
+    if np.isnan(label_SA):
+        label_SA = -1
+
     return [float(label_KW), float(label_SA)]
 
 def auto_trim_dist_ts(dist_ts, kpts_ts, trim_mask, peak_channels=[0,1,2,3], num_cycles=10, num_passes=1, smooth=True):
