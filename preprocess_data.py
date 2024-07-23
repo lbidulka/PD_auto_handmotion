@@ -14,8 +14,10 @@ import utils.data as data
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--dataset', default='PD4T', help='Dataset to process')   # CAMERA, PD4T
-    parser.add_argument('--UPDRS_task', default='finger_tapping', help='Task to process')  #hand_movement, finger_tapping
+    parser.add_argument('--UPDRS_task', default='hand_movement', help='Task to process')  #hand_movement, finger_tapping
     parser.add_argument('--save_out', default=True, help='Save output to file?')   # True False
+
+    parser.add_argument('--keep_only_agreed', default=False, help='Keep only samples where all labellers agree?')   # True False
 
     parser.add_argument('--smooth', default=True, help='Smooth the data?')   # True False
 
@@ -38,7 +40,7 @@ def plot_dists(finger_dists, labels, subj_ids, handednesses, fig_save_path, plot
                     DEBUG_SAMPLES.append(DEBUG_PEAKS[i])
                 else:
                     DEBUG_SAMPLES.append(None)
-            fig_titles.append(f"{subj_ids[i]}, {handednesses[i]}, score: {labels[i]}")
+            fig_titles.append(f"({i}) {subj_ids[i]}, {handednesses[i]}, score: {labels[i]}")
             # plot every 4 samples
             if len(fig_samples) == 4 or i == len(finger_dists)-1:
                 fig, axs = plt.subplots(4,1)
@@ -76,8 +78,12 @@ if __name__ == '__main__':
     
     # Simple filtering
     if args.smooth:
-        savgol_win = 5
-        savgol_ord = 3
+        if args.dataset == 'CAMERA':
+            savgol_win = 7 #10 #7 #5
+            savgol_ord = 0 #3
+        elif args.dataset == 'PD4T':
+            savgol_win = 3 #3  #5
+            savgol_ord = 0 #3
         for i, ts in enumerate(trim_ts):
             # trim_ts[i] = signal.savgol_filter(ts, savgol_win, 3)
             for dim in range(ts.shape[1]):
@@ -140,13 +146,33 @@ if __name__ == '__main__':
     PLOT_FIGS = False
     PLOT_FIGS_INTERP = False
     # PLOT_SUBJS = ['36532', '18198', '21696', '34492', '17599', '23284', '35246', '36407']   # Change as desired
-    # PLOT_SUBJS = ['003', '008', '001', '011', '036']
+    # PLOT_SUBJS = ['16827', '28637']
     PLOT_SUBJS = []
 
     if PLOT_FIGS: plot_dists(finger_dists, labels, subj_ids, handednesses, 
                              figure_save_path + 'full/', PLOT_SUBJS)
     if PLOT_FIGS_INTERP: plot_dists(finger_dists_trimmed, labels, subj_ids, handednesses, 
                                     figure_save_path + 'interp/', PLOT_SUBJS, DEBUG_PEAKS)
+
+    # DEBUG: remove PD4T bad samples
+    PD4T_bad_sample_ids = [1, 4, 14, 15, 27, 44, 47, 53, 54, 59, 
+                           63, 64, 65, 66, 68, 72, 79, 90, 91, 93, 
+                           96, 99, 100, 101, 102, 103, 106, 108, 109, 
+                           110, 118, 121, 125, 126, 128, 131, 134, 137, 138, 
+                           141, 143, 146, 148, 150, 151, 152, 158, 159, 160,
+
+                           163, 164, 165, 170, 171, 180, 182, 183, 186, 187, 
+                           188, 190, 194, 195, 198, 202, 203, 204, 210, 211, 
+                           213, 220, 271, 272, 273, 274, 276, 337, 343, 344, 
+                           345, 403, 404, 405, 406, 483, 500, 503, 519, 571, 
+                           572, 574, 595, 596, 597, 598, 623, 624, 648, 661, 
+
+                           680, 681, 684, 685, 686, 687, 689, 690, 691, 700,
+                           701, 702, 703, 708, 709, 710, 711, 728, 730, 731, 
+                           742, 743, 747, 758, 759, 760, 770, 772, 806, 807, 
+                           808, 809, 810, 811, 812, 813, 822, 823, 824, 825, 
+                           830, 831, 833,]
+    too_short_mask = [True if i in PD4T_bad_sample_ids else i for i in too_short_mask]
 
     # exclude samples which are too short
     for i, data in enumerate(finger_dists_upscale):
@@ -173,7 +199,7 @@ if __name__ == '__main__':
         
         angle = np.arccos(palm_vector[:,2])
         angle_frac = (angle > FILTER_ANGLE).mean()
-        if angle_frac > FILTER_ANGLE_FRAC:
+        if (angle_frac > FILTER_ANGLE_FRAC) or (len(ts) == 0):
             trim_ts.pop(i)
             finger_dists_upscale.pop(i)
             finger_dists_trimmed.pop(i)
@@ -182,6 +208,17 @@ if __name__ == '__main__':
             upscale_ratios.pop(i)
             y = np.delete(y, i, axis=0)
 
+
+    # if desired, keep only samples where all labellers agree
+    if args.keep_only_agreed and (args.dataset != 'PD4T'):
+        agree_mask = y[:, 0] == y[:, 1]
+        trim_ts = [trim_ts[i] for i in range(len(trim_ts)) if agree_mask[i]]
+        finger_dists_upscale = [finger_dists_upscale[i] for i in range(len(finger_dists_upscale)) if agree_mask[i]]
+        finger_dists_trimmed = [finger_dists_trimmed[i] for i in range(len(finger_dists_trimmed)) if agree_mask[i]]
+        subj_ids = [subj_ids[i] for i in range(len(subj_ids)) if agree_mask[i]]
+        handednesses = [handednesses[i] for i in range(len(handednesses)) if agree_mask[i]]
+        upscale_ratios = [upscale_ratios[i] for i in range(len(upscale_ratios)) if agree_mask[i]]
+        y = y[agree_mask]
 
     # Print label distribution
     print('\nINFO: ')
