@@ -18,14 +18,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
     parser.add_argument('--UPDRS_task', default='hand_movement', help='Task to process')  #hand_movement, finger_tapping
-    parser.add_argument('--datasets', default='PD4T,CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
+    parser.add_argument('--datasets', default='CAMERA,PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
-    parser.add_argument('--model', default='cnn_vae', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
+    parser.add_argument('--model', default='ddnet', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
     parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
-    parser.add_argument('--num_folds', default=10, help='Number of folds for N-fold evaluation')   # 5, 10
+    parser.add_argument('--num_folds', default=15, help='Number of folds for N-fold evaluation')   # 5, 10
     
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
     parser.add_argument('--save_model_path', default='./checkpoints/', help='Path to save models')
@@ -43,7 +43,7 @@ def print_metrics(metrics):
             if metric == 'conf_mat':
                 print(f'    {metric}: \n{value}')
             else:
-                print(f'    {metric}: {value:.3f}')
+                print(f'    {metric}: {value:.2f}')
         print('')
 
 def set_seed(args):
@@ -100,14 +100,17 @@ def N_fold_eval(args, model, data):
         data_format = 'scaled'  # 'scaled', 'unscaled', 'unscaled_kpt'
         combine_34 = False
 
-    rej_unlabelled_annot = 1 # if not None, reject samples if this annotator has label == -1
+    rej_unlabelled_annot = model.labeler_idx # if not None, reject samples if this annotator has label == -1
     rej_either = False   # if True, reject samples if any label == -1. If False, reject if all labels == -1
     binclass_idx = 0    # index to split multiclass into binary classification (ie label > binclass_idx is 1, else 0)
+    keep_only_agreed_labels = False # if True, keep only samples where all labels are the same
 
     subj_ids = np.unique(data.subj_ids)
     subj_data = data.get_subj_data(subj_ids, use_ratio=model.use_ratio, format=data_format)
     _, _, _, rej_idxs = data_utils.remove_unlabeled(subj_data, 
-                                                    combine_34=combine_34, rej_either=rej_either, 
+                                                    combine_34=combine_34, 
+                                                    keep_agree=keep_only_agreed_labels,
+                                                    rej_either=rej_either, 
                                                     rej_annot=rej_unlabelled_annot)
     data.delete_idxs(rej_idxs)
 
@@ -118,6 +121,16 @@ def N_fold_eval(args, model, data):
                                                              combine_34, model.labeler_idx)
     if args.wblog:
         wandb.log({'fold_dists': eval_fold_dists}, commit=False)
+
+    # Set weights for loss if needed
+    if hasattr(model, 'loss_type') and model.loss_type == 'Focal':
+        class_cnt_idx = model.labeler_idx
+        class_cnt = torch.bincount(torch.tensor(data.y[:, class_cnt_idx]).long())
+        if combine_34:
+            class_cnt[3] += class_cnt[4]
+            class_cnt = class_cnt[:4]
+    else:
+        class_cnt = None
 
     # Run that sucker
     print(f'\n{args.num_folds}-fold Eval on {len(subj_ids)} subjects:')
@@ -141,7 +154,10 @@ def N_fold_eval(args, model, data):
 
         # Train and evaluate
         if len(test_x) != 0:
-            model.init_model()
+            if class_cnt != None:
+                model.init_model(class_cnts=class_cnt)
+            else: 
+                model.init_model()
             model.train(train_x, train_y, train_subj_ids=train_subj_ids)
             test_pred = model(test_x)
             if model.name != 'feature_ml':
@@ -231,11 +247,13 @@ if __name__ == '__main__':
             model = dsp_updrs.UPDRS_DSP(task=args.task,)
         elif eval_model == 'ddnet':
             model = ddnet.DDNet(task=args.task, datasets=args.datasets, UPDRS_task=args.UPDRS_task, device=args.device)
+            data = data_timeseries.data_timeseries(args.datasets, args.UPDRS_task, kpts_uniform_len=model.frame_l)  # set kpts series len
         elif eval_model == 'dist_ddnet':
             model = dist_ddnet.DistDDNet(task=args.task, datasets=args.datasets, UPDRS_task=args.UPDRS_task, device=args.device)
+            data = data_timeseries.data_timeseries(args.datasets, args.UPDRS_task, kpts_uniform_len=model.frame_l)  # set kpts series len
         elif eval_model == 'cnn_vae':
             model = cnn_vae.CnnVae(task=args.task, datasets=args.datasets, device=args.device, 
-                                   length=256, nclasses=4, latent_size=25, transition_channels=4)
+                                   length=256, nclasses=4, transition_channels=4)
         # FEATURE BASELINES
         elif eval_model == 'feature_ml':
             model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
