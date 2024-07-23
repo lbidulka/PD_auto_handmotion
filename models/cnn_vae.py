@@ -24,188 +24,9 @@ import torch.utils.data
 import matplotlib.pyplot as plt
 from tqdm import tqdm_notebook as tqdm
 
-class Conv_block(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, padding, is_conv=True):
-        super(Conv_block, self).__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.padding = padding 
-        self.pool_op = torch.nn.AvgPool1d(2, ) if is_conv \
-                  else torch.nn.Upsample(scale_factor=2, mode='linear')
-        self.conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
-        self.bn = torch.nn.BatchNorm1d(out_channels, eps=0.001, momentum=0.99)
-        self.relu = torch.nn.ReLU()
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.relu(x)
-        return self.pool_op(x)
-
-
-class Encoder(torch.nn.Module):
-    def __init__(self, in_channels, in_length, nclasses, latent_size, encoder_out_channels,
-                 device):
-        super(Encoder, self).__init__()
-        self.device = device
-
-        self.in_channels = in_channels
-        self.in_length = in_length
-        self.nclasses = nclasses
-        self.latent_size = latent_size
-        self.encoder_out_channels = encoder_out_channels
-        length = self.in_length
-        self.bn0 = torch.nn.BatchNorm1d(self.in_channels, eps=0.001, momentum=0.99)
-        # Layer 1
-        in_channels = self.in_channels
-        out_channels = 32
-        kernel_size = 21
-        padding = kernel_size // 2
-        self.conv_block_1 = Conv_block(in_channels, out_channels, kernel_size, padding)
-        length = length // 2
-        # Layer 2
-        in_channels = out_channels
-        out_channels = 32
-        kernel_size = 21
-        padding = kernel_size // 2
-        self.conv_block_2 = Conv_block(in_channels, out_channels, kernel_size, padding)
-        length = length // 2
-
-        # Layer 3
-        in_channels = out_channels
-        last_featuremaps_channels = 64
-        kernel_size = 21
-        padding = kernel_size // 2
-        self.conv_block_3 = Conv_block(in_channels, last_featuremaps_channels, kernel_size, padding)
-        length = length // 2
-
-        in_channels = last_featuremaps_channels
-        out_channels = nclasses
-        kernel_size = 20
-        padding = kernel_size // 2
-        self.conv_final = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
-        self.gp_final = torch.nn.AvgPool1d(length)
-
-        # encoder
-        in_channels = last_featuremaps_channels
-        out_channels = self.encoder_out_channels
-        kernel_size = 21
-        padding = kernel_size // 2
-        self.adapt_pool = torch.nn.AvgPool1d(2); length = length // 2
-        self.adapt_conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
-        self.encode_mean = torch.nn.Linear(length*out_channels, self.latent_size)
-        self.encode_logvar = torch.nn.Linear(length*out_channels, self.latent_size)
-        self.relu = torch.nn.ReLU()
-        length = 1
-
-    def forward(self, x):
-        x = x.view(-1, self.in_channels, self.in_length)
-        x = self.bn0(x)
-        x = self.conv_block_1(x)
-        x = self.conv_block_2(x)
-        x = self.conv_block_3(x)
-        cv_final = self.conv_final(x)
-        oh_class = self.gp_final(cv_final)
-        x = self.adapt_pool(x)
-        x = self.adapt_conv(x)
-        x = x.view(x.size(0), -1)
-        mean = self.relu(self.encode_mean(x)) 
-        logvar = self.relu(self.encode_logvar(x))
-        return [oh_class.view(oh_class.size(0), self.nclasses), 
-                mean, logvar, 
-                self._sample_latent(mean, logvar)]
-
-    def _sample_latent(self, mean, logvar): # z ~ N(mean, var (sigma^2))   
-        z_std = torch.from_numpy(np.random.normal(0, 1, size=mean.size())).float()
-        sigma = torch.exp(logvar).to(self.device)
-        return mean + sigma * Variable(z_std, requires_grad=False).to(self.device)
-
-class Decoder(torch.nn.Module):
-    def __init__(self, length, in_channels, nclasses, latent_size, device):
-        super(Decoder, self).__init__()
-        self.device = device
-
-        self.in_channels = in_channels
-        self.length = length
-        self.latent_size = latent_size
-        length = self.length  
-        length = length // 2 // 2 // 2 
-        # Adapt Layer
-        self.relu = torch.nn.ReLU()
-        self.tanh = torch.nn.Tanh()
-        self.adapt_nn = torch.nn.Linear(latent_size, self.in_channels*length)
-        # Layer 1
-        in_channels = self.in_channels
-        out_channels = 64
-        kernel_size = 20
-        padding = kernel_size // 2
-        self.deconv_block_1 = Conv_block(in_channels, out_channels, kernel_size, padding, is_conv=False)
-        length = length * 2
-        # Layer 2
-        in_channels = out_channels
-        out_channels = 32
-        kernel_size = 20
-        padding = kernel_size // 2
-        self.deconv_block_2 = Conv_block(in_channels, out_channels, kernel_size, padding, is_conv=False)
-        length = length * 2
-
-        # Layer 3
-        in_channels = out_channels
-        out_channels = 32
-        kernel_size = 20
-        padding = kernel_size // 2
-        self.deconv_block_3 = Conv_block(in_channels, out_channels, kernel_size, padding, is_conv=False)
-        length = length * 2
-
-        in_channels = out_channels
-        out_channels = 1
-        kernel_size = 20
-        padding = kernel_size // 2
-        self.decode_conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
-
-    def forward(self, z):
-
-        x = self.relu(self.adapt_nn(z)).to(self.device)
-        x = x.view(x.size(0), self.in_channels, self.length // 2 // 2 // 2)
-        x = self.deconv_block_1(x)
-        x = self.deconv_block_2(x)
-        x = self.deconv_block_3(x)
-        x = self.decode_conv(x)
-        out = self.tanh(x)
-        return out
-
-class SSD(torch.nn.Module):
-    def __init__(self):
-        super(SSD, self).__init__()
-    def forward(self, x_decoded, x):
-        loss = torch.sum(torch.pow(x - x_decoded, 2))
-        return loss / x_decoded.size(0)
-
-class Variational_loss(torch.nn.Module):
-    def __init__(self):
-        super(Variational_loss, self).__init__()
-    def forward(self, x_decoded, x, mu, logvar, length):
-        if len(x.shape) > 2:
-            x = x.squeeze()
-        return SSD()(x_decoded.squeeze()[:,:length], x[:,:length]) + torch.sum(0.5 * (mu ** 2 + torch.exp(logvar) - logvar - 1))
-
-class VAE_loss(torch.nn.Module):
-    def __init__(self, weights):
-        super(VAE_loss, self).__init__()
-        self.classification_loss = torch.nn.CrossEntropyLoss(weights)
-        self.variational_loss = Variational_loss()
-        self.c = 0.01
-    def forward(self, x_decoded, x, mu, logvar, oh_class, y, length):
-
-        a = self.classification_loss(oh_class, y)
-        b = self.variational_loss(
-            x_decoded, 
-            x, 
-            mu, logvar, length)*self.c
-        return a + b, a, b
 
 class CnnVae(torch.nn.Module):
-    def __init__(self, task, datasets, device, length, nclasses, latent_size, transition_channels, class_weights=None,):
+    def __init__(self, task, datasets, device, length, nclasses, transition_channels, class_weights=None,):
         super(CnnVae, self).__init__()
 
         self.name = 'cnn_vae'
@@ -214,26 +35,54 @@ class CnnVae(torch.nn.Module):
         self.device = torch.device(device) #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.use_ratio = False
         self.combine_34 = True
-        self.sample_format = 'scaled'   # input data format: 'scaled_kpt', 'unscaled_kpt', 'scaled', 'unscaled'
+        self.sample_format = 'scaled_hf'   # input data format: 'scaled_kpt', 'unscaled_kpt', 'scaled', 'unscaled'
 
-        self.length = length
+        self.sequence_len = length
         self.nclasses = nclasses
-        self.latent_size = latent_size
         self.transition_channels = transition_channels
 
-        self.val_frac = 0.20
+        self.layer_type = 'mlp'  # 'conv', 'mlp'
+        if self.layer_type == 'conv':
+            self.latent_size = 50
+            self.hidden_dims = [32, 32, 64] #[32, 32, 64]     # (reversed for decoder)
+            self.val_frac = 0.3
+            self.batch_size = 32 #128
+            self.epochs_warmup = 250     # 200
+            self.epochs_main = 50       # 50
+            self.lr_warmup = 1e-4 #5e-4       # 1e-4
+            self.lr_main = 1e-5 #5e-4         # 1e-5
+        elif self.layer_type == 'mlp':
+            self.latent_size = 32
+            self.hidden_dims = [64, 32, 32] #[32, 32, 64]     # (reversed for decoder)
+            self.val_frac = 0.2
+            self.batch_size = 32 #128
+            self.epochs_warmup = 250     # 200
+            self.epochs_main = 50       # 50
+            self.lr_warmup = 1e-3 #5e-4       # 1e-4
+            self.lr_main = 1e-5 #5e-4         # 1e-5
 
-        self.dropout = torch.nn.Dropout1d(0.2)
+        self.dropout_type = 'none'        # simple_dropout, none,
 
         self.transforms = [loader.noise_rand, loader.scale_rand]
         self.transforms_p = [0.9, 0.9]
-        self.batch_size = 128
         self.labeler_idx = 1
 
+        self.classifier_type = 'low_mlp'      # 'low_conv', 'low_mlp', 'latent_linear', 'latent_mlp'
 
     def init_model(self):
-        self.encoder = Encoder(1, self.length, self.nclasses, self.latent_size, self.transition_channels, self.device)
-        self.decoder = Decoder(self.length, self.transition_channels, self.nclasses, self.latent_size, self.device)
+        self.encoder = Encoder(1, self.sequence_len, self.nclasses, self.latent_size, 
+                               self.transition_channels, self.classifier_type, self.hidden_dims, self.layer_type,
+                               self.device)
+        self.decoder = Decoder(self.sequence_len, self.nclasses, self.latent_size, 
+                               self.transition_channels, self.hidden_dims[::-1], self.layer_type,
+                               self.device)
+        
+        if self.dropout_type == 'simple_dropout':
+            dropout_frac = 0.2
+            self.dropout = torch.nn.Dropout(dropout_frac)
+        elif self.dropout_type == 'none':
+            self.dropout = torch.nn.Identity()
+
         self.to(self.device)
 
     def forward(self, x, train=False):
@@ -312,14 +161,15 @@ class CnnVae(torch.nn.Module):
             trainset = loader.CustomTensorDataset(tensors=(x_train, y_train), 
                                                     transforms=self.transforms, 
                                                     transforms_p=self.transforms_p, 
-                                                    use_ratio=self.use_ratio)
+                                                    use_ratio=self.use_ratio,)
             valset = loader.CustomTensorDataset(tensors=(x_val, y_val), 
                                                     use_ratio=self.use_ratio)
         else:
             trainset, valset = torch.utils.data.random_split(loader.CustomTensorDataset(tensors=(x_tensor, y_tensor), 
                                                                                         transforms=self.transforms,
                                                                                         transforms_p=self.transforms_p, 
-                                                                                        use_ratio=self.use_ratio), 
+                                                                                        use_ratio=self.use_ratio,
+                                                                                        seq_len=self.sequence_len), 
                                                              [train_size, val_size])
 
         # Setup weighted random sample for trainset
@@ -337,9 +187,10 @@ class CnnVae(torch.nn.Module):
 
         return trainset, valset, sampler
 
-    def test(self, model, loader):
+    def test(self, model, loader, Loss=None):
         acc = []
-        Loss = torch.nn.CrossEntropyLoss()
+        if Loss is None:
+            Loss = torch.nn.CrossEntropyLoss()
         loss = 0
 
         with torch.no_grad():
@@ -352,13 +203,16 @@ class CnnVae(torch.nn.Module):
                 _, index = torch.max(y_pred, -1)
                 acc.append((index == y).cpu().data.numpy())
             acc = np.concatenate(acc).mean()
-        return acc, loss        
+        loss /= len(loader.dataset.tensors[0])
+        return acc, loss.item()  
 
     def train(self, x, y, 
               train_subj_ids=None,
               x_val=None, y_val=None):
         '''
         '''
+
+        x = x[:, :, :2]
 
         if x_val is None:
             trainset, valset, sampler = self.setup_dataset(x, y, train_subj_ids)
@@ -391,7 +245,8 @@ class CnnVae(torch.nn.Module):
         weights = torch.from_numpy(np.array(list(class_weight.values()))).float().to(self.device)
 
         parameters = []
-        layers = (self.encoder.conv_final, self.encoder.gp_final)
+        # layers = (self.encoder.conv_final, self.encoder.gp_final)
+        layers = self.encoder.classifier
         for layer in layers:
             for param in layer.parameters():
                 param.requires_grad = False
@@ -408,41 +263,77 @@ class CnnVae(torch.nn.Module):
 
         # warm up
         print("\nWarm up -----------")
+        best_val_metric = math.inf
         # learning_rates = [0.00001] * 1000 + [0.000001] * 1000 
         # learning_rates = [1e-5] * 1000 + [1e-6] * 1000 
-        learning_rates = [1e-4] * 100 + [1e-5] * 100  #+ [1e-6] * 25
+        # learning_rates = [1e-4] * (self.epochs_warmup//2) + [1e-5] * (self.epochs_warmup//2)  #+ [1e-6] * 25
+        # learning_rates = [self.lr_warmup] * (self.epochs_warmup//2) + [self.lr_warmup/2] * (self.epochs_warmup//2)  #+ [1e-6] * 25
+        learning_rates = [self.lr_warmup] * self.epochs_warmup
         for epoch, lr in enumerate(learning_rates):
             train_loss = 0
             optim_vae.param_groups[0]['lr'] = lr
             for i, (x, y) in enumerate(train_loader):
-                x = Variable(x).float().to(self.device)
+                x = Variable(x).float().to(self.device)[:, :self.sequence_len]
                 y = Variable(y.long()).to(self.device)
 
-                x = self.dropout.forward(x)
-                oh_class, mu, logvar, z, x_decoded = self.forward(x, train=True)
-                loss = Loss(x_decoded.to(self.device), x, mu.to(self.device), logvar.to(self.device), self.length) # x_decoded, x, mu, oh_class, y
+                x_masked = self.dropout.forward(x)
+                oh_class, mu, logvar, z, x_decoded = self.forward(x_masked, train=True)
+                loss = Loss(x_decoded.to(self.device), x, mu.to(self.device), logvar.to(self.device), self.sequence_len) # x_decoded, x, mu, oh_class, y
 
                 optim_vae.zero_grad()
                 train_loss += loss
                 loss.backward()
                 optim_vae.step()
 
-            if epoch%100==0:
-                print('Epoch: ', epoch)
+            if epoch%50==0:
                 train_loader_len = len(train_loader.dataset.tensors[0])
-                print('Train loss: ', train_loss.item() / train_loader_len)
+                # print(f' Train loss: {train_loss.item() / train_loader_len:.3f}')
 
                 val_loss = 0
                 with torch.no_grad():
                     for i, (x, y) in enumerate(val_loader):
-                        x = Variable(x).float().to(self.device)
+                        x = Variable(x).float().to(self.device)[:, :self.sequence_len]
                         y = Variable(y.long()).to(self.device)
 
                         oh_class, mu, logvar, z, x_decoded = self.forward(x, train=True)
-                        loss = Loss(x_decoded.to(self.device), x, mu.to(self.device), logvar.to(self.device), self.length) # x_decoded, x, mu, oh_class, y
-                        val_loss +=loss
+                        loss = Loss(x_decoded.to(self.device), x, mu.to(self.device), logvar.to(self.device), self.sequence_len) # x_decoded, x, mu, oh_class, y
+                        val_loss += loss
                     val_loader_len = len(val_loader.dataset.tensors[0])
-                    print('Val loss:', val_loss.item() / val_loader_len)
+                    # val_loss = val_loss.item() / val_loader_len
+                    # print(f' Val loss: {val_loss:.4f}')
+
+                print(f'Ep {epoch}:  train_loss: {train_loss.item():.3f}, val_loss: {val_loss:.4f}')
+                
+                if best_val_metric > val_loss:
+                    print(f" -----> (Ep {epoch}) New best val_loss = {val_loss:.4f}")
+                    best_val_metric = val_loss
+                    best_epoch = epoch
+                    best_model = self.state_dict()
+
+        # Load best model after warmup
+        if best_model is not None:
+            self.load_state_dict(best_model)
+            print('\nBest epoch:', best_epoch)
+            print(f'Best val metric: {best_val_metric:.5f}')
+
+
+        # DEBUG: make some plots of raw, and reconstructed samples (from last batch)
+        _debug_plt_outpath = '_debug_outputs/vae/' + 'reconstruction.png'
+        num_samples = 4
+        x = x.cpu().detach().numpy()
+        x_decoded = x_decoded.squeeze().cpu().detach().numpy()
+        fig, axs = plt.subplots(2, num_samples, figsize=(20, 10))
+        for i in range(num_samples):
+            axs[0, i].plot(x[i, :])
+            axs[1, i].plot(x_decoded[i, :self.sequence_len])
+            # titles
+            axs[0, i].set_title(f'Raw (y = {y[i]})')
+            axs[1, i].set_title(f'Reconstructed (y = {y[i]})')
+            # y range
+            axs[0, i].set_ylim(0, 1)
+            axs[1, i].set_ylim(0, 1)
+        plt.savefig(_debug_plt_outpath)
+        # -------------------------------------------------------------------------
 
         parameters = []
         for layer in layers:
@@ -460,10 +351,10 @@ class CnnVae(torch.nn.Module):
         Loss = VAE_loss(weights)
 
         print("\nMain Training -----------")
-        best_val_metric = -math.inf
+        best_val_metric = math.inf
         # learning_rates = [0.00001] * 500 
         # learning_rates = [1e-5] * 500 
-        learning_rates = [1e-5] * 50
+        learning_rates = [self.lr_main] * self.epochs_main
         # learning_rates = [1e-4] * 50 + [1e-5] * 10
         for epoch, lr in enumerate(learning_rates):
             train_loss = 0
@@ -472,10 +363,10 @@ class CnnVae(torch.nn.Module):
                 x = Variable(x).float().to(self.device)
                 y = Variable(y.long()).to(self.device)
 
-                x = self.dropout.forward(x)
-                oh_class, mu, logvar, z, x_decoded = self.forward(x, train=True)
+                x_masked = self.dropout.forward(x)
+                oh_class, mu, logvar, z, x_decoded = self.forward(x_masked, train=True)
                 loss, class_loss, var_loss = \
-                    Loss(x_decoded.to(self.device), x, mu.to(self.device), logvar.to(self.device), oh_class.to(self.device), y, self.length) # x_decoded, x, mu, oh_class, y
+                    Loss(x_decoded.to(self.device), x, mu.to(self.device), logvar.to(self.device), oh_class.to(self.device), y, self.sequence_len) # x_decoded, x, mu, oh_class, y
                 optim_all.zero_grad()
                 train_loss += loss.item()
                 loss.backward()
@@ -489,23 +380,25 @@ class CnnVae(torch.nn.Module):
                 #     enc_aux_loss.backward()
                 #     optim.step()
 
-
+            val_acc, val_loss = self.test(self.encoder, val_loader, Loss.classification_loss)
             if epoch%10==0:
                 train_loader_len = len(train_loader.dataset.tensors[0])
-                print('Epoch:', epoch)
-                print('Loss:', loss.data.item() / train_loader_len)
-                print('Class loss:', class_loss.data.item() / train_loader_len)
-                print('Recon loss:', var_loss.data.item() / train_loader_len)
-                print('Train Accuracy: ', self.test(self.encoder, train_loader))
-                
-            val_acc, val_loss = self.test(self.encoder, val_loader)
-            if epoch%10==0:
-                print('Validation Acc, Loss:', val_acc, val_loss)
-            val_loader_len = len(val_loader.dataset.tensors[0])
-            val_loss = val_loss.item() / val_loader_len
+                train_acc, train_loss = self.test(self.encoder, train_loader, Loss.classification_loss)
 
-            if best_val_metric < val_loss:
-                print(" -----> New best val model")
+                print(f'Ep {epoch}:  train_loss: {train_loss}, train_acc: {train_acc:.2f}, val_acc: {val_acc:.2f}, val_loss: {val_loss:.4f}')
+
+                # print('Epoch:', epoch)
+                # print(f' Loss: {loss.data.item() / train_loader_len:.3f}')
+                # print(f' Class loss: {class_loss.data.item() / train_loader_len:.5f}')
+                # print(f' Recon loss: {var_loss.data.item() / train_loader_len:.5f}')                
+                # print(f' Train Acc, loss: {train_acc:.2f}, {train_loss:.5f}')
+                # print(f' Validation Acc, Loss: {val_acc:.2f}, {val_loss:.5f}')
+                
+            # val_loader_len = len(val_loader.dataset.tensors[0])
+
+            # if best_val_metric > val_loss:
+            if best_val_metric > val_loss:
+                print(f" -----> (Ep {epoch}) New best val_loss = {val_loss:.5f}")
                 best_val_metric = val_loss
                 best_epoch = epoch
                 best_model = self.state_dict()
@@ -513,5 +406,263 @@ class CnnVae(torch.nn.Module):
                 # Load best model after training
         if best_model is not None:
             self.load_state_dict(best_model)
-            print('Best epoch:', best_epoch)
-            print('Best val metric:', best_val_metric)
+            print('\nBest epoch:', best_epoch)
+            print(f'Best val metric: {best_val_metric:.5f}')
+
+class Conv_block(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, padding, is_conv=True):
+        super(Conv_block, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.padding = padding 
+        self.pool_op = torch.nn.AvgPool1d(2, ) if is_conv \
+                  else torch.nn.Upsample(scale_factor=2, mode='linear')
+        self.conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
+        self.bn = torch.nn.BatchNorm1d(out_channels, eps=0.001, momentum=0.99)
+        self.relu = torch.nn.ReLU()
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        return self.pool_op(x)
+
+
+class Encoder(torch.nn.Module):
+    def __init__(self, in_channels, in_length, nclasses, latent_size, encoder_out_channels, classifier_type, hidden_dims, layer_type,
+                 device):
+        super(Encoder, self).__init__()
+        self.device = device
+        self.classifier_type = classifier_type
+        self.layer_type = layer_type
+
+        self.in_channels = in_channels
+        self.in_length = in_length
+        self.nclasses = nclasses
+        self.latent_size = latent_size
+        self.encoder_out_channels = encoder_out_channels
+        length = self.in_length
+        self.bn0 = torch.nn.BatchNorm1d(self.in_channels, eps=0.001, momentum=0.99)
+
+        self.hidden_dims = hidden_dims
+
+        # for loop to declare layers
+        modules = []
+        out_channels = self.in_channels
+        if self.layer_type == 'mlp':
+            modules.append(torch.nn.Flatten())
+            in_channels = self.in_channels * self.in_length
+        for i in range(len(hidden_dims)):
+            if self.layer_type == 'conv':
+                in_channels = out_channels
+                out_channels = hidden_dims[i]
+                kernel_size = 21
+                padding = kernel_size // 2
+                modules.append(Conv_block(in_channels, out_channels, kernel_size, padding))
+                length = length // 2
+            elif self.layer_type == 'mlp':
+                block = torch.nn.Sequential(
+                    torch.nn.Linear(in_channels, hidden_dims[i]),
+                    torch.nn.BatchNorm1d(hidden_dims[i]),
+                    torch.nn.ReLU()
+                )
+                in_channels = hidden_dims[i]
+                modules.append(block)
+        self.enc_blocks = torch.nn.Sequential(*modules)
+        
+        last_featuremaps_channels = hidden_dims[-1]
+
+        # Classifier
+        if self.classifier_type == 'low_conv':
+            in_channels = last_featuremaps_channels
+            out_channels = nclasses
+            kernel_size = 20
+            padding = kernel_size // 2
+            self.classifier = torch.nn.Sequential(
+                torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding),
+                torch.nn.AvgPool1d(length)
+            )
+            self.conv_final = self.classifier[0]
+            self.gp_final = self.classifier[1]
+        elif self.classifier_type == 'latent_linear':
+            self.classifier = torch.nn.Sequential(
+                torch.nn.Linear(self.latent_size, nclasses)
+            )
+        elif self.classifier_type == 'latent_mlp':
+            linear_size = 64
+            self.classifier = torch.nn.Sequential(
+                torch.nn.Linear(self.latent_size, linear_size),
+                torch.nn.BatchNorm1d(num_features=linear_size),
+                torch.nn.ReLU(),
+                torch.nn.Linear(linear_size, nclasses)
+            )
+        elif self.classifier_type == 'low_mlp':
+            linear_size = 64
+            self.classifier = torch.nn.Sequential(
+                torch.nn.Linear(self.hidden_dims[-1], linear_size),
+                torch.nn.BatchNorm1d(num_features=linear_size),
+                torch.nn.ReLU(),
+                torch.nn.Linear(linear_size, nclasses)
+            )
+
+        # encoder
+        in_channels = last_featuremaps_channels
+        out_channels = self.encoder_out_channels
+        kernel_size = 21
+        padding = kernel_size // 2
+        self.adapt_pool = torch.nn.AvgPool1d(2); length = length // 2
+        self.adapt_conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
+
+        if self.layer_type == 'conv':
+            self.encode_mean = torch.nn.Linear(length*out_channels, self.latent_size)
+            self.encode_logvar = torch.nn.Linear(length*out_channels, self.latent_size)
+        elif self.layer_type == 'mlp':
+            self.encode_mean = torch.nn.Linear(hidden_dims[-1], self.latent_size)
+            self.encode_logvar = torch.nn.Linear(hidden_dims[-1], self.latent_size)
+
+        self.relu = torch.nn.ReLU()
+        length = 1
+
+    def forward(self, x):
+        if x.shape[1] != self.in_length:
+            # separate out the handcraft features
+            hf = x[:, self.in_length:]
+            x = x[:, :self.in_length]
+
+        x = x.view(-1, self.in_channels, self.in_length)
+        x = self.bn0(x)
+        x = self.enc_blocks(x)
+        post_enc = x
+
+        if self.layer_type == 'conv':
+            x = self.adapt_pool(x)
+            x = self.adapt_conv(x)
+            x = x.view(x.size(0), -1)
+
+        mean = self.relu(self.encode_mean(x)) 
+        logvar = self.relu(self.encode_logvar(x))
+        z = self._reparameterize(mean, logvar)
+
+        if self.classifier_type in ['low_conv', 'low_mlp']:
+            oh_class = self.classifier(post_enc)
+        elif self.classifier_type in ['latent_linear', 'latent_mlp']:
+            oh_class = self.classifier(z)
+
+        return [oh_class.view(oh_class.size(0), self.nclasses), 
+                mean, logvar, 
+                z]
+
+    def _reparameterize(self, mean, logvar): # z ~ N(mean, var (sigma^2))   
+        # z_std = torch.from_numpy(np.random.normal(0, 1, size=mean.size())).float()
+        # sigma = torch.exp(logvar).to(self.device)
+        # return mean + sigma * Variable(z_std, requires_grad=False).to(self.device)
+        
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mean + eps * std
+
+class Decoder(torch.nn.Module):
+    def __init__(self, length, nclasses, latent_size, in_channels, hidden_dims, layer_type, device):
+        super(Decoder, self).__init__()
+        self.device = device
+        self.layer_type = layer_type
+
+        self.in_channels = in_channels
+        self.sequence_len = length
+        self.latent_size = latent_size
+        length = self.sequence_len  
+        length = length // 2 // 2 // 2 
+
+        self.hidden_dims = hidden_dims
+
+        # Adapt Layer
+        self.relu = torch.nn.ReLU()
+        self.tanh = torch.nn.Tanh()
+        self.sigmoid = torch.nn.Sigmoid()
+        self.adapt_nn = torch.nn.Linear(latent_size, self.in_channels*length)
+
+        # for loop to declare layers
+        modules = []
+        out_channels = self.in_channels
+        if self.layer_type == 'mlp':
+            modules.append(torch.nn.Flatten())
+            in_channels = self.in_channels * length
+        for i in range(len(hidden_dims)):
+            if self.layer_type == 'conv':
+                in_channels = out_channels
+                out_channels = hidden_dims[i]
+                kernel_size = 20
+                padding = kernel_size // 2
+                modules.append(Conv_block(in_channels, out_channels, kernel_size, padding, is_conv=False))
+                length = length * 2
+            elif self.layer_type == 'mlp':
+                block = torch.nn.Sequential(
+                    torch.nn.Linear(in_channels, hidden_dims[i]),
+                    torch.nn.BatchNorm1d(hidden_dims[i]),
+                    torch.nn.ReLU()
+                )
+                in_channels = hidden_dims[i]
+                modules.append(block)
+        self.dec_blocks = torch.nn.Sequential(*modules)
+
+        in_channels = out_channels
+        out_channels = 1
+        kernel_size = 20
+        padding = kernel_size // 2
+        if self.layer_type == 'conv':
+            self.dec_final = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
+        elif self.layer_type == 'mlp':
+            self.dec_final = torch.nn.Linear(hidden_dims[-1], self.sequence_len)
+
+    def forward(self, z):
+
+        x = self.relu(self.adapt_nn(z)).to(self.device)
+        x = x.view(x.size(0), self.in_channels, self.sequence_len // 2 // 2 // 2)
+        x = self.dec_blocks(x)
+        x = self.dec_final(x)
+        # out = self.tanh(x)
+        out = self.sigmoid(x)
+        # out = x
+        return out
+
+class SSD(torch.nn.Module):
+    def __init__(self):
+        super(SSD, self).__init__()
+
+    def forward(self, x_decoded, x):
+        loss = torch.sum(torch.pow(x - x_decoded, 2))
+        return loss / x_decoded.size(0)
+
+class Variational_loss(torch.nn.Module):
+    def __init__(self):
+        super(Variational_loss, self).__init__()
+
+    def forward(self, x_decoded, x, mu, logvar, length):
+        if len(x.shape) > 2:
+            x = x.squeeze()
+
+        recons_loss = torch.nn.functional.mse_loss(x_decoded.squeeze(1)[:,:length], x[:,:length])
+        kld_loss = (-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)).mean()
+
+        # return SSD()(x_decoded.squeeze(1)[:,:length], x[:,:length]) + torch.sum(0.5 * (mu ** 2 + torch.exp(logvar) - logvar - 1))
+        return recons_loss + kld_loss
+
+class VAE_loss(torch.nn.Module):
+    def __init__(self, weights, class_loss_type='Focal'):
+        super(VAE_loss, self).__init__()
+        if class_loss_type == 'CrossEntropy':
+            self.classification_loss = torch.nn.CrossEntropyLoss(weights)
+        elif class_loss_type == 'Focal':
+            self.classification_loss = utils.focal_loss.FocalLoss(gamma=2)
+        self.variational_loss = Variational_loss()
+        self.c = 0.01
+
+    def forward(self, x_decoded, x, mu, logvar, oh_class, y, length):
+
+        a = self.classification_loss(oh_class, y)
+        b = self.variational_loss(
+            x_decoded, 
+            x, 
+            mu, logvar, length)*self.c
+        return a + b, a, b
+
