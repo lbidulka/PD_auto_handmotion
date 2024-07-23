@@ -41,33 +41,38 @@ class CnnVae(torch.nn.Module):
         self.nclasses = nclasses
         self.transition_channels = transition_channels
 
-        self.layer_type = 'mlp'  # 'conv', 'mlp'
+        self.layer_type = 'conv'  # 'conv', 'mlp'
         if self.layer_type == 'conv':
-            self.latent_size = 50
-            self.hidden_dims = [32, 32, 64] #[32, 32, 64]     # (reversed for decoder)
+            self.latent_size = 16
+            # self.hidden_dims = [32, 32, 64] #[32, 32, 64]     # (reversed for decoder)
+            self.hidden_dims = [64, 32, 32] 
             self.val_frac = 0.3
             self.batch_size = 32 #128
-            self.epochs_warmup = 250     # 200
-            self.epochs_main = 50       # 50
-            self.lr_warmup = 1e-4 #5e-4       # 1e-4
-            self.lr_main = 1e-5 #5e-4         # 1e-5
-        elif self.layer_type == 'mlp':
-            self.latent_size = 32
-            self.hidden_dims = [64, 32, 32] #[32, 32, 64]     # (reversed for decoder)
-            self.val_frac = 0.2
-            self.batch_size = 32 #128
-            self.epochs_warmup = 250     # 200
+            self.epochs_warmup = 1000     # 200
             self.epochs_main = 50       # 50
             self.lr_warmup = 1e-3 #5e-4       # 1e-4
             self.lr_main = 1e-5 #5e-4         # 1e-5
+        elif self.layer_type == 'mlp':
+            self.latent_size = 8
+            self.hidden_dims = [64, 32] #[32, 32, 64]     # (reversed for decoder)
+            self.val_frac = 0.2
+            self.batch_size = 32 #128
+            self.epochs_warmup = 5000     # 200
+            self.epochs_main = 50       # 50
+            self.lr_warmup = 1e-4 #5e-4       # 1e-4
+            self.lr_warmup_scheduler = 'cosine'
+            self.lr_main = 1e-5 #5e-4         # 1e-5
+
+        if datasets == 'dummy':
+            self.batch_size == 2
 
         self.dropout_type = 'none'        # simple_dropout, none,
 
-        self.transforms = [loader.noise_rand, loader.scale_rand]
-        self.transforms_p = [0.9, 0.9]
+        self.transforms = []#[loader.noise_rand, loader.scale_rand]
+        self.transforms_p = []#[0.9, 0.9]
         self.labeler_idx = 1
 
-        self.classifier_type = 'low_mlp'      # 'low_conv', 'low_mlp', 'latent_linear', 'latent_mlp'
+        self.classifier_type = 'latent_linear'      # 'low_conv', 'low_mlp', 'latent_linear', 'latent_mlp'
 
     def init_model(self):
         self.encoder = Encoder(1, self.sequence_len, self.nclasses, self.latent_size, 
@@ -267,8 +272,11 @@ class CnnVae(torch.nn.Module):
         # learning_rates = [0.00001] * 1000 + [0.000001] * 1000 
         # learning_rates = [1e-5] * 1000 + [1e-6] * 1000 
         # learning_rates = [1e-4] * (self.epochs_warmup//2) + [1e-5] * (self.epochs_warmup//2)  #+ [1e-6] * 25
-        # learning_rates = [self.lr_warmup] * (self.epochs_warmup//2) + [self.lr_warmup/2] * (self.epochs_warmup//2)  #+ [1e-6] * 25
-        learning_rates = [self.lr_warmup] * self.epochs_warmup
+        learning_rates = [self.lr_warmup] * (self.epochs_warmup//2) + \
+                        [self.lr_warmup/4] * (self.epochs_warmup//4) + \
+                        [self.lr_warmup/10] * (self.epochs_warmup//8) + \
+                        [self.lr_warmup/100] * (self.epochs_warmup//8)  
+        # learning_rates = [self.lr_warmup] * self.epochs_warmup
         for epoch, lr in enumerate(learning_rates):
             train_loss = 0
             optim_vae.param_groups[0]['lr'] = lr
@@ -310,6 +318,25 @@ class CnnVae(torch.nn.Module):
                     best_epoch = epoch
                     best_model = self.state_dict()
 
+                # DEBUG: make some plots of raw, and reconstructed samples (from last batch)
+                _debug_plt_outpath = '_debug_outputs/vae/' + 'reconstruction.png'
+                num_samples = 4
+                x = x.cpu().detach().numpy()
+                x_decoded = x_decoded.squeeze().cpu().detach().numpy()
+                fig, axs = plt.subplots(2, num_samples, figsize=(20, 10))
+                for i in range(num_samples):
+                    axs[0, i].plot(x[i, :])
+                    axs[1, i].plot(x_decoded[i, :self.sequence_len])
+                    # titles
+                    axs[0, i].set_title(f'Raw (y = {y[i]})')
+                    axs[1, i].set_title(f'Reconstructed (y = {y[i]})')
+                    # y range
+                    axs[0, i].set_ylim(0, 1)
+                    axs[1, i].set_ylim(0, 1)
+                plt.savefig(_debug_plt_outpath)
+                plt.close()
+                # -------------------------------------------------------------------------
+
         # Load best model after warmup
         if best_model is not None:
             self.load_state_dict(best_model)
@@ -333,6 +360,7 @@ class CnnVae(torch.nn.Module):
             axs[0, i].set_ylim(0, 1)
             axs[1, i].set_ylim(0, 1)
         plt.savefig(_debug_plt_outpath)
+        plt.close()
         # -------------------------------------------------------------------------
 
         parameters = []
@@ -420,7 +448,7 @@ class Conv_block(torch.nn.Module):
                   else torch.nn.Upsample(scale_factor=2, mode='linear')
         self.conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
         self.bn = torch.nn.BatchNorm1d(out_channels, eps=0.001, momentum=0.99)
-        self.relu = torch.nn.ReLU()
+        self.relu = torch.nn.LeakyReLU()
     def forward(self, x):
         x = self.conv(x)
         x = self.bn(x)
@@ -464,7 +492,7 @@ class Encoder(torch.nn.Module):
                 block = torch.nn.Sequential(
                     torch.nn.Linear(in_channels, hidden_dims[i]),
                     torch.nn.BatchNorm1d(hidden_dims[i]),
-                    torch.nn.ReLU()
+                    torch.nn.LeakyReLU()
                 )
                 in_channels = hidden_dims[i]
                 modules.append(block)
@@ -493,7 +521,7 @@ class Encoder(torch.nn.Module):
             self.classifier = torch.nn.Sequential(
                 torch.nn.Linear(self.latent_size, linear_size),
                 torch.nn.BatchNorm1d(num_features=linear_size),
-                torch.nn.ReLU(),
+                torch.nn.LeakyReLU(),
                 torch.nn.Linear(linear_size, nclasses)
             )
         elif self.classifier_type == 'low_mlp':
@@ -501,7 +529,7 @@ class Encoder(torch.nn.Module):
             self.classifier = torch.nn.Sequential(
                 torch.nn.Linear(self.hidden_dims[-1], linear_size),
                 torch.nn.BatchNorm1d(num_features=linear_size),
-                torch.nn.ReLU(),
+                torch.nn.LeakyReLU(),
                 torch.nn.Linear(linear_size, nclasses)
             )
 
@@ -514,22 +542,16 @@ class Encoder(torch.nn.Module):
         self.adapt_conv = torch.nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding)
 
         if self.layer_type == 'conv':
-            self.encode_mean = torch.nn.Linear(length*out_channels, self.latent_size)
-            self.encode_logvar = torch.nn.Linear(length*out_channels, self.latent_size)
+            self.fc_mean = torch.nn.Linear(length*out_channels, self.latent_size)
+            self.fc_logvar = torch.nn.Linear(length*out_channels, self.latent_size)
         elif self.layer_type == 'mlp':
-            self.encode_mean = torch.nn.Linear(hidden_dims[-1], self.latent_size)
-            self.encode_logvar = torch.nn.Linear(hidden_dims[-1], self.latent_size)
+            self.fc_mean = torch.nn.Linear(hidden_dims[-1], self.latent_size)
+            self.fc_logvar = torch.nn.Linear(hidden_dims[-1], self.latent_size)
 
-        self.relu = torch.nn.ReLU()
+        self.relu = torch.nn.LeakyReLU()
         length = 1
 
-    def forward(self, x):
-        if x.shape[1] != self.in_length:
-            # separate out the handcraft features
-            hf = x[:, self.in_length:]
-            x = x[:, :self.in_length]
-
-        x = x.view(-1, self.in_channels, self.in_length)
+    def _encode(self, x):
         x = self.bn0(x)
         x = self.enc_blocks(x)
         post_enc = x
@@ -537,10 +559,20 @@ class Encoder(torch.nn.Module):
         if self.layer_type == 'conv':
             x = self.adapt_pool(x)
             x = self.adapt_conv(x)
-            x = x.view(x.size(0), -1)
 
-        mean = self.relu(self.encode_mean(x)) 
-        logvar = self.relu(self.encode_logvar(x))
+        x = x.flatten(start_dim=1)
+        mean = self.fc_mean(x)
+        logvar = self.fc_logvar(x)
+        return [mean, logvar, post_enc]
+
+    def forward(self, x):
+        if x.shape[1] != self.in_length:
+            # separate out the handcraft features
+            hf = x[:, self.in_length:]
+            x = x[:, :self.in_length]
+        x = x.view(-1, self.in_channels, self.in_length)
+
+        mean, logvar, post_enc = self._encode(x)
         z = self._reparameterize(mean, logvar)
 
         if self.classifier_type in ['low_conv', 'low_mlp']:
@@ -576,7 +608,7 @@ class Decoder(torch.nn.Module):
         self.hidden_dims = hidden_dims
 
         # Adapt Layer
-        self.relu = torch.nn.ReLU()
+        self.relu = torch.nn.LeakyReLU()
         self.tanh = torch.nn.Tanh()
         self.sigmoid = torch.nn.Sigmoid()
         self.adapt_nn = torch.nn.Linear(latent_size, self.in_channels*length)
@@ -599,7 +631,7 @@ class Decoder(torch.nn.Module):
                 block = torch.nn.Sequential(
                     torch.nn.Linear(in_channels, hidden_dims[i]),
                     torch.nn.BatchNorm1d(hidden_dims[i]),
-                    torch.nn.ReLU()
+                    torch.nn.LeakyReLU()
                 )
                 in_channels = hidden_dims[i]
                 modules.append(block)
@@ -620,8 +652,8 @@ class Decoder(torch.nn.Module):
         x = x.view(x.size(0), self.in_channels, self.sequence_len // 2 // 2 // 2)
         x = self.dec_blocks(x)
         x = self.dec_final(x)
-        # out = self.tanh(x)
-        out = self.sigmoid(x)
+        out = self.tanh(x)
+        # out = self.sigmoid(x)
         # out = x
         return out
 

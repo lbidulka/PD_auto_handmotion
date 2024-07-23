@@ -4,6 +4,7 @@ import os
 
 import utils.data as data_utils
 import utils.features
+import utils._dummy_dataset
 
 class data_timeseries():
     def __init__(self, datasets=None, UPDRS_task=None, kpts_uniform_len=256) -> None:
@@ -27,17 +28,34 @@ class data_timeseries():
         x, x_unscaled, x_kpts, y, subj_ids, handednesses, upscale_ratios, fps = [], [], [], [], [], [], [], []
         self.data = []
         for dataset in datasets:
-            file_path = f'data/{dataset}/timeseries/{self.action}_all.npz'
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"ERR: Preprocessed Dataset file not found: {file_path}")
-            self.data.append(np.load(file_path))
-            x.append(self.data[-1]['samples_scaled'])
-            x_unscaled.append(np.split(self.data[-1]['samples_unscaled'], 
-                                       self.data[-1]['samples_unscaled_idxs'], 
-                                       axis=0))
-            x_kpts.append(np.split(self.data[-1]['samples_kpts_unscaled'], 
-                                       self.data[-1]['samples_unscaled_idxs'], 
-                                       axis=0))
+            if dataset == 'dummy':
+                dummy_dataset = utils._dummy_dataset.DummyDataset(seq_len=256, num_samples=50)
+                self.x = dummy_dataset.data
+                self.x_unscaled = dummy_dataset.x_unscaled
+                self.x_kpts = dummy_dataset.x_kpts
+                self.x_kpts_unscaled = dummy_dataset.x_kpts_unscaled
+
+                self.y = dummy_dataset.labels
+                self.subj_ids = dummy_dataset.subj_ids
+                self.handednesses = dummy_dataset.handednesses
+                self.upscale_ratios = dummy_dataset.upscale_ratios
+                self.kpts_rescale_ratios = dummy_dataset.kpts_rescale_ratios
+                self.dataset_framerates = dummy_dataset.dataset_framerates
+                self.handcraft_feats = dummy_dataset.handcraft_feats         
+                return       
+
+            else:
+                file_path = f'data/{dataset}/timeseries/{self.action}_all.npz'
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"ERR: Preprocessed Dataset file not found: {file_path}")
+                self.data.append(np.load(file_path))
+                x.append(self.data[-1]['samples_scaled'])
+                x_unscaled.append(np.split(self.data[-1]['samples_unscaled'], 
+                                        self.data[-1]['samples_unscaled_idxs'], 
+                                        axis=0))
+                x_kpts.append(np.split(self.data[-1]['samples_kpts_unscaled'], 
+                                        self.data[-1]['samples_unscaled_idxs'], 
+                                        axis=0))
             labels = self.data[-1]['labels']
             if dataset == 'PD4T':
                 # repeat labels to emulate multiple raters
@@ -209,7 +227,7 @@ class data_timeseries():
                             axis=1)
             # pad and reshape handcraft features, then insert at 2nd last position
             hf = self.handcraft_feats[subj_idxs]
-            hf = hf.reshape(hf.shape[0], -1, 1).repeat([1, 1, 4], 2)
+            hf = hf.reshape(hf.shape[0], -1, 1).repeat(4, 2)
             # hf = np.append(hf, pad, axis=1).reshape(-1, 1, out_x.shape[2], out_x.shape[3])
             # insert at 2nd last position
             out_x = np.concatenate([out_x[:,:-1], hf, out_x[:,-1:]], axis=1)
