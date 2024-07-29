@@ -13,11 +13,12 @@ import utils.data as data
 
 def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
-    parser.add_argument('--dataset', default='PD4T', help='Dataset to process')   # CAMERA, PD4T
+    parser.add_argument('--dataset', default='CAMERA', help='Dataset to process')   # CAMERA, PD4T
     parser.add_argument('--UPDRS_task', default='hand_movement', help='Task to process')  #hand_movement, finger_tapping
     parser.add_argument('--save_out', default=True, help='Save output to file?')   # True False
 
     parser.add_argument('--keep_only_agreed', default=False, help='Keep only samples where all labellers agree?')   # True False
+    parser.add_argument('--remove_PD4T_short', default=True, help='Remove PD4T samples which are too short?')   # True False
 
     parser.add_argument('--smooth', default=True, help='Smooth the data?')   # True False
 
@@ -32,7 +33,7 @@ def plot_dists(finger_dists, labels, subj_ids, handednesses, fig_save_path, plot
     fig_samples = []
     fig_titles = []
     DEBUG_SAMPLES = []
-    for i, data in enumerate(finger_dists):
+    for i, data in tqdm(enumerate(finger_dists)):
         if (subj_ids[i] in plot_subjs) or (len(plot_subjs) == 0):
             fig_samples.append(data)
             if DEBUG_PEAKS != None: 
@@ -79,10 +80,10 @@ if __name__ == '__main__':
     # Simple filtering
     if args.smooth:
         if args.dataset == 'CAMERA':
-            savgol_win = 7 #10 #7 #5
+            savgol_win = 6 #10 #7 #5
             savgol_ord = 0 #3
         elif args.dataset == 'PD4T':
-            savgol_win = 3 #3  #5
+            savgol_win = 2 #3  #5
             savgol_ord = 0 #3
         for i, ts in enumerate(trim_ts):
             # trim_ts[i] = signal.savgol_filter(ts, savgol_win, 3)
@@ -141,39 +142,6 @@ if __name__ == '__main__':
     # Load up labels
     y = np.vstack(labels)
 
-    # DEBUG: Plotting
-    figure_save_path = f'outputs/debug/feat_plots/{args.UPDRS_task}/'
-    PLOT_FIGS = False
-    PLOT_FIGS_INTERP = False
-    # PLOT_SUBJS = ['36532', '18198', '21696', '34492', '17599', '23284', '35246', '36407']   # Change as desired
-    # PLOT_SUBJS = ['16827', '28637']
-    PLOT_SUBJS = []
-
-    if PLOT_FIGS: plot_dists(finger_dists, labels, subj_ids, handednesses, 
-                             figure_save_path + 'full/', PLOT_SUBJS)
-    if PLOT_FIGS_INTERP: plot_dists(finger_dists_trimmed, labels, subj_ids, handednesses, 
-                                    figure_save_path + 'interp/', PLOT_SUBJS, DEBUG_PEAKS)
-
-    # DEBUG: remove PD4T bad samples
-    PD4T_bad_sample_ids = [1, 4, 14, 15, 27, 44, 47, 53, 54, 59, 
-                           63, 64, 65, 66, 68, 72, 79, 90, 91, 93, 
-                           96, 99, 100, 101, 102, 103, 106, 108, 109, 
-                           110, 118, 121, 125, 126, 128, 131, 134, 137, 138, 
-                           141, 143, 146, 148, 150, 151, 152, 158, 159, 160,
-
-                           163, 164, 165, 170, 171, 180, 182, 183, 186, 187, 
-                           188, 190, 194, 195, 198, 202, 203, 204, 210, 211, 
-                           213, 220, 271, 272, 273, 274, 276, 337, 343, 344, 
-                           345, 403, 404, 405, 406, 483, 500, 503, 519, 571, 
-                           572, 574, 595, 596, 597, 598, 623, 624, 648, 661, 
-
-                           680, 681, 684, 685, 686, 687, 689, 690, 691, 700,
-                           701, 702, 703, 708, 709, 710, 711, 728, 730, 731, 
-                           742, 743, 747, 758, 759, 760, 770, 772, 806, 807, 
-                           808, 809, 810, 811, 812, 813, 822, 823, 824, 825, 
-                           830, 831, 833,]
-    too_short_mask = [True if i in PD4T_bad_sample_ids else i for i in too_short_mask]
-
     # exclude samples which are too short
     for i, data in enumerate(finger_dists_upscale):
         if (subj_ids[i] in too_short.keys()) and (handednesses[i] in too_short[subj_ids[i]]):
@@ -186,8 +154,10 @@ if __name__ == '__main__':
     handednesses = [handednesses[i] for i in range(len(handednesses)) if not too_short_mask[i]]
     upscale_ratios = [upscale_ratios[i] for i in range(len(upscale_ratios)) if not too_short_mask[i]]
     y = y[~np.array(too_short_mask)]
+    DEBUG_PEAKS = [DEBUG_PEAKS[i] for i in range(len(DEBUG_PEAKS)) if not too_short_mask[i]]
 
     # Remove samples which have bad position w.r.t. the camera
+    filtered_idxs = []
     FILTER_ANGLE = 2.0
     FILTER_ANGLE_FRAC = 0.25
     for i, ts in enumerate(finger_dists_trimmed):
@@ -200,13 +170,26 @@ if __name__ == '__main__':
         angle = np.arccos(palm_vector[:,2])
         angle_frac = (angle > FILTER_ANGLE).mean()
         if (angle_frac > FILTER_ANGLE_FRAC) or (len(ts) == 0):
-            trim_ts.pop(i)
-            finger_dists_upscale.pop(i)
-            finger_dists_trimmed.pop(i)
-            subj_ids.pop(i)
-            handednesses.pop(i)
-            upscale_ratios.pop(i)
-            y = np.delete(y, i, axis=0)
+            if i not in filtered_idxs: filtered_idxs.append(i)    
+
+    # for PD4T, reject samples which are too short to be accurate given the sampling rate
+    if (args.dataset == 'PD4T') and (args.remove_PD4T_short):
+        min_len = 100
+        for i, ts in enumerate(trim_ts):
+            if len(ts) < min_len:
+                if i not in filtered_idxs: filtered_idxs.append(i)
+
+    # delete at desired indices
+    filtered_idxs.sort(reverse=True)
+    for i in filtered_idxs:
+        trim_ts.pop(i)
+        finger_dists_upscale.pop(i)
+        finger_dists_trimmed.pop(i)
+        subj_ids.pop(i)
+        handednesses.pop(i)
+        upscale_ratios.pop(i)
+        y = np.delete(y, i, axis=0)       
+        DEBUG_PEAKS.pop(i)
 
 
     # if desired, keep only samples where all labellers agree
@@ -219,6 +202,55 @@ if __name__ == '__main__':
         handednesses = [handednesses[i] for i in range(len(handednesses)) if agree_mask[i]]
         upscale_ratios = [upscale_ratios[i] for i in range(len(upscale_ratios)) if agree_mask[i]]
         y = y[agree_mask]
+
+    # DEBUG: remove PD4T bad samples
+    if args.dataset == 'PD4T':
+        # PD4T_bad_sample_ids = [1, 4, 14, 15, 27, 44, 47, 53, 54, 59, 
+        #                        63, 64, 65, 66, 68, 72, 79, 90, 91, 93, 
+        #                        96, 99, 100, 101, 102, 103, 106, 108, 109, 
+        #                        110, 118, 121, 125, 126, 128, 131, 134, 137, 138, 
+        #                        141, 143, 146, 148, 150, 151, 152, 158, 159, 160,
+
+        #                        163, 164, 165, 170, 171, 180, 182, 183, 186, 187, 
+        #                        188, 190, 194, 195, 198, 202, 203, 204, 210, 211, 
+        #                        213, 220, 271, 272, 273, 274, 276, 337, 343, 344, 
+        #                        345, 403, 404, 405, 406, 483, 500, 503, 519, 571, 
+        #                        572, 574, 595, 596, 597, 598, 623, 624, 648, 661, 
+
+        #                        680, 681, 684, 685, 686, 687, 689, 690, 691, 700,
+        #                        701, 702, 703, 708, 709, 710, 711, 728, 730, 731, 
+        #                        742, 743, 747, 758, 759, 760, 770, 772, 806, 807, 
+        #                        808, 809, 810, 811, 812, 813, 822, 823, 824, 825, 
+        #                        830, 831, 833,]
+        # fine grained PD4T samples
+        PD4T_bad_sample_ids = [
+            13, 17, 20, 21, 29, 32, 37, 38, 43, 45, 88, 90, 173, 326, 327, 420, 423, 427
+        ]
+        # delete at desired indices
+        filtered_idxs = [i for i in range(len(subj_ids)) if subj_ids[i] in PD4T_bad_sample_ids]
+        filtered_idxs.sort(reverse=True)
+        for i in filtered_idxs:
+            trim_ts.pop(i)
+            finger_dists_upscale.pop(i)
+            finger_dists_trimmed.pop(i)
+            subj_ids.pop(i)
+            handednesses.pop(i)
+            upscale_ratios.pop(i)
+            y = np.delete(y, i, axis=0)       
+            DEBUG_PEAKS.pop(i)
+
+    # DEBUG: Plotting
+    figure_save_path = f'outputs/debug/feat_plots/{args.UPDRS_task}/'
+    PLOT_FIGS = False
+    PLOT_FIGS_INTERP = False
+    # PLOT_SUBJS = ['36532', '18198', '21696', '34492', '17599', '23284', '35246', '36407']   # Change as desired
+    # PLOT_SUBJS = ['16827', '28637']
+    PLOT_SUBJS = []
+
+    if PLOT_FIGS: plot_dists(finger_dists, y, subj_ids, handednesses, 
+                             figure_save_path + 'full/', PLOT_SUBJS)
+    if PLOT_FIGS_INTERP: plot_dists(finger_dists_trimmed, y, subj_ids, handednesses, 
+                                    figure_save_path + 'interp/', PLOT_SUBJS, DEBUG_PEAKS)
 
     # Print label distribution
     print('\nINFO: ')

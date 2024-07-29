@@ -38,8 +38,8 @@ class Base_DeepNet():
             raise NotImplementedError
         return preds
     
-    def init_model(self):
-        self._build_model()
+    def init_model(self, *args, **kwargs):
+        self._build_model(*args, **kwargs)
 
     def get_model_dict(self):
         return self.model.state_dict()
@@ -79,8 +79,8 @@ class Base_DeepNet():
                                                     transforms_p=self.transforms_p, 
                                                     use_ratio=self.use_ratio)
         valset = loader.CustomTensorDataset(tensors=(x_val, y_val), 
-                                                transforms=self.transforms, 
-                                                transforms_p=self.transforms_p, 
+                                                # transforms=self.transforms, 
+                                                # transforms_p=self.transforms_p, 
                                                 use_ratio=self.use_ratio)
         return trainset, valset
 
@@ -129,13 +129,13 @@ class Base_DeepNet():
             train_ids = torch.tensor(train_ids).unique()
             val_ids = torch.tensor(val_ids).unique()
 
-            # setup loss w/ class weights if needed
-            if self.loss_type == 'Focal':
-                class_weights_idx = 1   # TEMP: have to choose label to use for counting
-                class_weights = torch.bincount(y_train[:, class_weights_idx].flatten())
-                self.class_weights = 1 / class_weights
-                focal_alpha = self.class_weights * (self.clc / torch.linalg.norm(self.class_weights, ord=1))   # norm 
-                self._build_criterion(focal_alpha.to(self.device))
+            # # setup loss w/ class weights if needed
+            # if self.loss_type == 'Focal':
+            #     class_weights_idx = 1   # TEMP: have to choose label to use for counting
+            #     class_weights = torch.bincount(y_train[:, class_weights_idx].flatten())
+            #     self.class_weights = 1 / class_weights
+            #     focal_alpha = self.class_weights * (self.clc / torch.linalg.norm(self.class_weights, ord=1))   # norm 
+            #     self._build_criterion(focal_alpha.to(self.device))
 
             trainset, valset = self.make_trainval_sets(x_train, y_train, x_val, y_val)
         else:
@@ -201,11 +201,14 @@ class Base_DeepNet():
         # Train
         best_model = None
         for epoch in range(self.num_epochs):
-            train_loss, train_f1, train_acc = 0, 0, 0
+            train_labels, train_preds, val_labels, val_preds = [], [], [], []
+            train_loss, train_f1, train_bal_acc = 0, 0, 0
             self.model.train()
+            if (hasattr(self, 'f_branch_warmup_eps')):
+                self.model.f_branch_warming_up = True if (self.f_branch_warmup_eps > epoch) else False
             for i, data in enumerate(trainloader, 0):
                 inputs, labels = data
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
+                inputs, labels = inputs.to(self.device, non_blocking=True), labels.to(self.device, non_blocking=True)
                 self.optimizer.zero_grad()
                 if (inputs.shape[0] == 1):
                     inputs = torch.cat([inputs, inputs], dim=0)
@@ -219,53 +222,65 @@ class Base_DeepNet():
                 loss.backward()
                 self.optimizer.step()
                 # log metrics
-                if self.task == 'multiclass':
-                    preds = torch.argmax(outputs, dim=1).cpu().numpy()
-                    train_f1 += sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted')
-                    train_acc += sklearn.metrics.accuracy_score(labels[:,1].cpu().numpy(), preds)
+                train_preds.append(torch.argmax(outputs, dim=1))
+                train_labels.append(labels[:,1])
+                # if self.task == 'multiclass':
+                    # preds = torch.argmax(outputs, dim=1).cpu().numpy()
+                    # train_f1 += sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted')
+                    # train_acc += sklearn.metrics.accuracy_score(labels[:,1].cpu().numpy(), preds)
             # Validate
             self.model.eval()
-            val_loss, val_f1, val_acc = 0, 0, 0
+            val_loss, val_f1, val_bal_acc = 0, 0, 0
             with torch.no_grad():
                 for data in valloader:
                     inputs, labels = data
-                    inputs, labels = inputs.to(self.device), labels.to(self.device)
+                    inputs, labels = inputs.to(self.device, non_blocking=True), labels.to(self.device, non_blocking=True)
                     outputs = self.model(inputs)
                     loss = self.loss(outputs, labels)
                     val_loss += loss.item()
                     # log metrics
-                    if self.task == 'multiclass':
-                        preds = torch.argmax(outputs, dim=1).cpu().numpy()
-                        # make sample weights based on sample weights
-                        # if self.class_weights is not None:
-                        #     f1_sample_weights = self.class_weights[labels[:,1].cpu().numpy()]
-                        # else:
-                        #     f1_sample_weights = None
-                        val_f1 += sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted',)# sample_weight=f1_sample_weights)
-                        val_acc += sklearn.metrics.accuracy_score(labels[:,1].cpu().numpy(), preds)
+                    val_preds.append(torch.argmax(outputs, dim=1))
+                    val_labels.append(labels[:,1])
+                    # if self.task == 'multiclass':
+                    #     preds = torch.argmax(outputs, dim=1).cpu().numpy()
+                    #     # make sample weights based on sample weights
+                    #     # if self.class_weights is not None:
+                    #     #     f1_sample_weights = self.class_weights[labels[:,1].cpu().numpy()]
+                    #     # else:
+                    #     #     f1_sample_weights = None
+                    #     val_f1 += sklearn.metrics.f1_score(labels[:,1].cpu().numpy(), preds, average='weighted',)# sample_weight=f1_sample_weights)
+                    #     val_acc += sklearn.metrics.accuracy_score(labels[:,1].cpu().numpy(), preds)
             # log
+            train_preds = torch.cat(train_preds).cpu().numpy()
+            train_labels = torch.cat(train_labels).cpu().numpy()
+            val_preds = torch.cat(val_preds).cpu().numpy()
+            val_labels = torch.cat(val_labels).cpu().numpy()
+            train_f1 = sklearn.metrics.f1_score(train_labels, train_preds, average='weighted')
+            train_bal_acc = sklearn.metrics.balanced_accuracy_score(train_labels, train_preds)
+            val_f1 = sklearn.metrics.f1_score(val_labels, val_preds, average='weighted')
+            val_bal_acc = sklearn.metrics.balanced_accuracy_score(val_labels, val_preds)
             metrics = {
                 'train': {
                     'loss': train_loss / len(trainloader),
-                    'f1': train_f1 / len(trainloader),
-                    'acc': train_acc / len(trainloader),
+                    'f1': train_f1, #/ len(trainloader),
+                    'bal_acc': train_bal_acc, #/ len(trainloader),
                 },
                 'val': {
                     'loss': val_loss / len(valloader),
-                    'f1': val_f1 / len(valloader),
-                    'acc': val_acc / len(valloader),
+                    'f1': val_f1, #/ len(valloader),
+                    'bal_acc': val_bal_acc, #/ len(valloader),
                 }
             }
             wandb_log = {
                     'train_loss': metrics['train']['loss'], 'val_loss': metrics['val']['loss'],
                     'train_f1': metrics['train']['f1'], 'val_f1': metrics['val']['f1'],
                 }
-            metrics_str = 'loss (train,val): {:.3f}, {:.3f} | f1 (train,val): {:.3f}, {:.3f} | acc (train,val): {:.3f}, {:.3f}'.format(metrics['train']['loss'], 
+            metrics_str = 'loss (train,val): {:.3f}, {:.3f} | bal_acc (train,val): {:.3f}, {:.3f} | f1 (train,val): {:.3f}, {:.3f}'.format(metrics['train']['loss'], 
                                                                                                            metrics['val']['loss'], 
+                                                                                                           metrics['train']['bal_acc'], 
+                                                                                                           metrics['val']['bal_acc'],
                                                                                                            metrics['train']['f1'], 
-                                                                                                           metrics['val']['f1'],
-                                                                                                           metrics['train']['acc'], 
-                                                                                                           metrics['val']['acc'])
+                                                                                                           metrics['val']['f1'],)
             if self.print_loss and (epoch % self.print_epochs == 0):
                 print(f'|| Epoch {epoch} ||  ' + metrics_str)
                 if self.scheduler is not None and self.print_lr:

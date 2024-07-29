@@ -18,19 +18,19 @@ def parse_args():
     parser = argparse.ArgumentParser(description='My command-line tool')
     parser.add_argument('--task', default='multiclass', help='Task to perform: binclass or multiclass')
     parser.add_argument('--UPDRS_task', default='hand_movement', help='Task to process')  #hand_movement, finger_tapping
-    parser.add_argument('--datasets', default='CAMERA,PD4T', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T
+    parser.add_argument('--datasets', default='PD4T,CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T, dummy
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
     parser.add_argument('--model', default='ddnet', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
     parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
-    parser.add_argument('--num_folds', default=15, help='Number of folds for N-fold evaluation')   # 5, 10
+    parser.add_argument('--num_folds', default=10, help='Number of folds for N-fold evaluation')   # 5, 10
     
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
     parser.add_argument('--save_model_path', default='./checkpoints/', help='Path to save models')
 
-    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -42,6 +42,9 @@ def print_metrics(metrics):
         for metric, value in metrics[rater].items():
             if metric == 'conf_mat':
                 print(f'    {metric}: \n{value}')
+            elif metric == 'stds':
+                for std_metric, std_value in value.items():
+                    print(f'    {std_metric} std: {std_value:.2}')
             else:
                 print(f'    {metric}: {value:.2f}')
         print('')
@@ -102,7 +105,7 @@ def N_fold_eval(args, model, data):
 
     rej_unlabelled_annot = model.labeler_idx # if not None, reject samples if this annotator has label == -1
     rej_either = False   # if True, reject samples if any label == -1. If False, reject if all labels == -1
-    binclass_idx = 0    # index to split multiclass into binary classification (ie label > binclass_idx is 1, else 0)
+    binclass_idx = 0    # positive class for binary classification
     keep_only_agreed_labels = False # if True, keep only samples where all labels are the same
 
     subj_ids = np.unique(data.subj_ids)
@@ -145,10 +148,10 @@ def N_fold_eval(args, model, data):
 
         # Convert to binary classification if needed
         if args.task == 'binclass':
-            train_mask = train_y > binclass_idx
+            train_mask = (train_y[:, model.labeler_idx] == binclass_idx)
             train_y[train_mask] = 1.0
             train_y[~train_mask] = 0.0
-            test_mask = test_y > binclass_idx
+            test_mask = (test_y[:, model.labeler_idx] == binclass_idx)
             test_y[test_mask] = 1.0
             test_y[~test_mask] = 0.0
 
@@ -190,7 +193,9 @@ def N_fold_eval(args, model, data):
     eval_ids = np.hstack(eval_ids)
     metrics = eval_utils.get_metrics(eval_preds, eval_targets, 
                                      task=args.task)
-    
+    # normalize the confusion matrix
+    for k in [key for key in metrics.keys() if key != 'inter_rater']:
+        metrics[k]['conf_mat'] = (metrics[k]['conf_mat'] / np.sum(metrics[k]['conf_mat'], axis=1)[:, None]).round(2)
     wandb_annot_idx = model.labeler_idx
     if wandb.run is not None:
         wandb.log({
@@ -287,6 +292,8 @@ if __name__ == '__main__':
     for k in [i for i in all_metrics[0].keys() if isinstance(i, int)]:
         avg_metrics[k] = {metric: np.mean([m[k][metric] for m in all_metrics.values()]) for metric in metrics[0].keys()}
         avg_metrics[k]['conf_mat'] = np.mean([m[k]['conf_mat'] for m in all_metrics.values()], axis=0)
+        # stds 
+        avg_metrics[k]['stds'] = {metric: np.std([m[k][metric] for m in all_metrics.values()]) for metric in metrics[0].keys()}
     
     print(f'\n--- {args.num_trials}-Run Avg RAW Metrics ---')
     print_metrics(avg_metrics)

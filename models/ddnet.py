@@ -12,6 +12,78 @@ import utils.dataloader as loader
 import utils.focal_loss
 import utils.features
 
+
+class OF_loss():
+        def __init__(self, gamma, alpha, num_classes, beta=0.2):
+            '''
+            beta:    weighting factor for ordinal loss
+            '''
+            self.alpha = alpha
+            self.beta = beta    # weighting factor for ordinal loss
+            self.gamma = gamma
+            self.num_classes = num_classes
+
+            # self.focal = utils.focal_loss.FocalLoss(gamma=self.gamma, alpha=self.alpha, reduction='none')
+            self.CE = nn.CrossEntropyLoss(reduction='none')
+            self.nll_loss = nn.NLLLoss(weight=self.alpha, reduction='none')
+
+        def focal_term(self, x, y):
+            '''
+            
+            '''
+            # compute weighted cross entropy term: -alpha * log(pt)
+            # (alpha is already part of self.nll_loss)
+            log_p = F.log_softmax(x, dim=-1)
+
+            # get true class column from each row
+            all_rows = torch.arange(len(x))
+            log_pt = log_p[all_rows, y]
+
+            # compute focal term: (1 - pt)^gamma
+            pt = log_pt.exp()
+            focal_term = (1 - pt)**self.gamma
+            return focal_term
+
+        def ordinal_term(self, logits, labels):
+            '''
+            Ordinal loss, to penalize predictions that are too far from the true label
+            '''
+            if self.num_classes == 4:
+                ordinal_matrix = torch.tensor([[0, 4, 6, 8,], 
+                                          [4, 0, 4, 6,],
+                                          [6, 4, 0, 4,],
+                                          [8, 6, 4, 0,],]).float()
+            else:
+                ordinal_matrix = torch.tensor([[0, 4, 6, 8, 10], 
+                                          [4, 0, 4, 6, 8],
+                                          [6, 4, 0, 4, 6],
+                                          [8, 6, 4, 0, 4],
+                                          [10, 8, 6, 4, 0],]).float()
+
+            # pred_labels = torch.argmax(logits, dim=1)
+            # ordinal_dist = torch.abs(pred_labels - labels)
+            # ordinal_loss = ((1 + ordinal_dist) / self.num_classes) * self.focal(logits, labels) #self.CE(logits, labels)
+            # ordinal_loss = ()
+            # ordinal_loss = ordinal_loss.mean()
+
+            ordinal_term = (torch.softmax(logits, 1) * ordinal_matrix.to(labels.device)[labels]).sum(1)
+
+
+            return ordinal_term
+
+        def __call__(self, logits, labels):
+            # focal = self.focal(logits, labels).mean()
+            # ordinal = self.ordinal_loss(logits, labels)
+            # loss =  (1 - self.beta) * focal + self.beta * ordinal
+
+            focal_term = self.focal_term(logits, labels)
+            ordinal_term = self.ordinal_term(logits, labels)
+            ce = self.CE(logits, labels)
+
+            loss = ((1 - self.beta) * focal_term + self.beta * ordinal_term) * ce
+            loss = loss.mean()
+            return loss
+
 class DDNet(Base_DeepNet):
     def __init__(self, task, datasets, UPDRS_task, device,
                  class_weights=None,):
@@ -23,7 +95,13 @@ class DDNet(Base_DeepNet):
         
         # Model params
         self.m_branch = True  # Use motion branch?
-        self.f_branch = False  # Use handcrafted feature branch?
+        # Feature branch options
+        self.f_branch = True  # Use handcrafted feature branch?
+        self.f_branch_type = 'lin_embed'  # lin_embed, cascade_mlp
+        self.f_branch_preconcat_layers = 0  # number of layers before concat with handcraft feats
+        self.f_branch_warmup_eps = 0   # no. to train kpt branches before enabling handcraft branch
+
+        self.skip_connections = True
 
         # Task
         self.task = task
@@ -42,48 +120,67 @@ class DDNet(Base_DeepNet):
         self.print_loss = True
         self.print_epochs = 1
 
-        self.flip_L_to_R = True  # swap all L hands to R hands
+        self.flip_L_to_R = True  # swap all L hands to R hands if True
         self.equalize_class_samples = False
 
         self.full_seq = True # use full sequence?
         # self.input_kpts = [0, 8, 12, 16, 20] 5   # wrist and all finger tips
         self.input_kpts = [i for i in range(21)]    # all kpts
+        # self.input_kpts = [i for i in range(21) if i not in [1,2,3,4]]    # all kpts excluding thumb
 
         if task == 'binclass':
             raise NotImplementedError
         elif task == 'multiclass':
             self.joint_n = len(self.input_kpts)   # the number of joints
-            self.joint_d = 3    # the dimension of joints
-            self.clc = 4        # num classes
+            self.joint_d = 2    # the dimension of joints
+            self.clc = 4 if self.combine_34 else 5         # num classes
             if self.joint_n == 21:
                 self.feat_d = 210
+            elif self.joint_n == 17:
+                self.feat_d = 136
             else:
                 self.feat_d = 10 #210   # flat JCD len
             
             self.filters = 16
-            self.num_linear = 1 # number of linear layers after conv blocks
+            self.num_linear = 2 # number of linear layers after conv blocks
+            self.linear_size = 32 # size of linear layers after conv blocks/fusion
             
             if self.sample_format in ['scaled_kpt', 'scaled_kpt_hf']: self.use_ratio = True
 
             if self.full_seq:
-                self.frame_l = 256 # max len for CAMERA = 1467
+                self.frame_l = 256 #256 # max len for CAMERA = 1467
             else:
                 self.frame_l = 80   # network input length     80
 
             # Training params
             self.selection_metric = 'loss'    # f1, loss
-            self.val_frac = 0.3
+            self.val_frac = 0.25
             if self.datasets == 'PD4T':
                 self.batch_size = 64
                 self.num_epochs = 50
+                self.lr = 1e-3
+                self.focal_gamma = 1.5
+            elif self.datasets == 'CAMERA':
+                self.batch_size = 32
+                self.num_epochs = 75 #75
                 self.lr = 5e-4
                 self.focal_gamma = 2
             elif self.datasets == 'CAMERA,PD4T' or self.datasets == 'PD4T,CAMERA':
                 if self.UPDRS_task == 'hand_movement':
+
                     self.batch_size = 128
-                    self.num_epochs = 50
-                    self.lr = 1e-3
-                    self.focal_gamma = 2
+                    self.focal_gamma = 1.5    #1.5
+                    self.num_epochs = 100
+                    
+                    if (self.f_branch_type == 'lin_embed'):
+                        if self.skip_connections:
+                            self.lr = 1e-3
+                        else:
+                            self.lr = 5e-4
+                    else:
+                        self.lr = 1e-3
+
+                    
                 elif self.UPDRS_task == 'finger_tapping':
                     self.batch_size = 128
                     self.num_epochs = 50
@@ -98,34 +195,53 @@ class DDNet(Base_DeepNet):
                     self.batch_size = 64
                     self.num_epochs = 1 #50
                     self.lr = 5e-4
+                self.focal_gamma = 2
             # self.loss_type = 'CrossEntropy'
-            self.loss_type = 'Focal'
+            self.loss_type = 'Focal' #'Focal', 'OF'
 
-            self.scheduler_type = None #'cosine'
+            self.scheduler_type = 'cosine' #'cosine', None, 
             self.scheduler_lr_min = 1e-5
             self.scheduler_T_max = int(self.num_epochs*2)
             self.print_lr = False
 
-            self.transforms = [loader.noise_rand,]# loader.scale_rand,]# loader.trim_rand]
-            self.transforms_p = [0.9,]# 0.9,]# 0.0]
+            # Data augmentations
+            self.transforms = [loader.noise_rand, loader.scale_rand]#loader.Hflip]# loader.scale_rand,]# loader.trim_rand]
+            self.transforms_p = [0.9, 0.9]# 0.5]# 0.9,]# 0.0]
+            if not self.flip_L_to_R:
+                self.transforms.append(loader.Hflip)
+                self.transforms_p.append(0.5)
+
             self.f_scaler = StandardScaler()    # handcrafted feature normalizer
         
         self._build_model()
-    
-    def _build_model(self):
+
+    def _build_model(self, *args, **kwargs):
         self.model = DDNet_Original(self.frame_l, self.joint_n, self.joint_d, self.feat_d, self.filters, self.clc, 
-                                    self.sample_format, self.input_kpts, self.m_branch, self.f_branch, self.num_linear)
+                                    self.sample_format, self.input_kpts, self.m_branch, 
+                                    self.f_branch, self.f_branch_type, self.f_branch_preconcat_layers,
+                                    self.num_linear, self.linear_size, self.skip_connections)
         self.model.to(self.device)
-        self._build_criterion()
+        self._build_criterion(*args, **kwargs)
         if self.scheduler_type == 'cosine':
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=self.scheduler_T_max, eta_min=self.scheduler_lr_min)
         
-    def _build_criterion(self, focal_alpha=None):
+    def _build_criterion(self, *args, **kwargs):
+        class_cnts = kwargs['class_cnts'] if len(kwargs) > 0 else None
         if self.task == 'multiclass': 
             if self.loss_type == 'CrossEntropy':
                 self.criterion = torch.nn.CrossEntropyLoss()
             elif self.loss_type == 'Focal':
-                self.criterion = utils.focal_loss.FocalLoss(gamma=self.focal_gamma, alpha=focal_alpha)
+                alpha = None
+                if class_cnts is not None:
+                    alpha = (1/ class_cnts) / torch.linalg.norm((1 / class_cnts).float(), ord=1)
+                    alpha = alpha.to(self.device)
+                self.criterion = utils.focal_loss.FocalLoss(gamma=self.focal_gamma, alpha=alpha)
+            elif self.loss_type == 'OF':
+                alpha = None
+                if class_cnts is not None:
+                    alpha = (1/ class_cnts) / torch.linalg.norm((1 / class_cnts).float(), ord=1)
+                    alpha = alpha.to(self.device)
+                self.criterion = OF_loss(gamma=self.focal_gamma, alpha=alpha, num_classes=self.clc)
         elif self.task == 'binclass':
             self.criterion = torch.nn.BCELoss(reduction='none')
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
@@ -160,7 +276,7 @@ class DDNet(Base_DeepNet):
             hand_dims = x_poses[0,0].flatten().shape[0]
             pad = torch.ones(x_feats.shape[0], hand_dims - x_feats.shape[1])*-99
             x_feats = torch.cat([torch.tensor(x_feats), pad], dim=1).reshape(-1, 1, x_poses.shape[2], x_poses.shape[3])
-            x_ratios = x_ratios[:,:, :x_poses.shape[2], :]
+            x_ratios = x_ratios[:,:, :x_poses.shape[2], :x_poses.shape[3]]
             x_clips = torch.cat([x_poses, x_feats, x_ratios], dim=1).float()
         else:
             x_clips = self.norm_input(vid_clips)
@@ -203,6 +319,8 @@ class DDNet(Base_DeepNet):
         '''
         Normalize input clips: [B, # frames, J, D]
         '''
+        # only keep desired dims
+        x = x[..., :self.joint_d]
         for i, clip in enumerate(x):
             if self.use_ratio:
                 clip = clip[:-1]
@@ -229,14 +347,14 @@ class DDNet(Base_DeepNet):
             # for all 0 frames, set palm size to 1
             palm_size[palm_size == 0] = 1
             # mean root joint
-            mean_root = clip[:,0].mean(0)
+            mean_root = clip[:,:1].mean((0,1), keepdims=True)
 
             if self.use_ratio:
-                x[i,:-1] /= palm_size
                 x[i,:-1] -= mean_root
+                x[i,:-1] /= palm_size
             else:
-                x[i] /= palm_size
                 x[i] -= mean_root
+                x[i] /= palm_size
 
         return x
 
@@ -280,8 +398,8 @@ class DDNet(Base_DeepNet):
                                                     use_ratio=self.use_ratio,
                                                     seq_len=self.frame_l)
         valset = loader.CustomTensorDataset(tensors=(x_val, y_val), 
-                                                transforms=self.transforms, 
-                                                transforms_p=self.transforms_p, 
+                                                # transforms=self.transforms, 
+                                                # transforms_p=self.transforms_p, 
                                                 use_ratio=self.use_ratio,
                                                 seq_len=self.frame_l)
         return trainset, valset
@@ -352,7 +470,7 @@ class DDNet(Base_DeepNet):
             hand_dims = x_poses[0,0].flatten().shape[0]
             pad = torch.ones(x_feats.shape[0], hand_dims - x_feats.shape[1])*-99
             x_feats = torch.cat([torch.tensor(x_feats), pad], dim=1).reshape(-1, 1, x_poses.shape[2], x_poses.shape[3])
-            x_ratios = x_ratios[:,:, :x_poses.shape[2], :]
+            x_ratios = x_ratios[:,:, :x_poses.shape[2], :x_poses.shape[3]]
             x_clips = torch.cat([x_poses, x_feats, x_ratios], dim=1)
         else:
             x_clips = self.norm_input(torch.from_numpy(x_clips).float())
@@ -400,17 +518,18 @@ def get_CG(p, joint_n, frame_l):
 class c1D(nn.Module):
     # input (B,C,D) //batch,channels,dims
     # output = (B,C,filters)
-    def __init__(self, input_channels, input_dims, filters, kernel):
+    def __init__(self, input_channels, input_dims, filters, kernel, skips=False):
         super(c1D, self).__init__()
+        self.skips = skips
         self.cut_last_element = (kernel % 2 == 0)
         self.padding = math.ceil((kernel - 1)/2)
         self.conv1 = nn.Conv1d(input_dims, filters,
                                kernel, bias=False, padding=self.padding)
         self.bn = nn.BatchNorm1d(num_features=input_channels)
 
-    def forward(self, x):
+    def forward(self, x_in):
         # x (B,D,C)
-        x = x.permute(0, 2, 1)
+        x = x_in.permute(0, 2, 1)
         # output (B,filters,C)
         if(self.cut_last_element):
             output = self.conv1(x)[:, :, :-1]
@@ -420,14 +539,21 @@ class c1D(nn.Module):
         output = output.permute(0, 2, 1)
         output = self.bn(output)
         output = F.leaky_relu(output, 0.2, True)
+        # Residual
+        if self.skips:
+            # Downsample if needed
+            if output.shape[-1] != x_in.shape[-1]:
+                x_in = F.interpolate(x_in, size=(output.shape[-1],), mode='nearest').squeeze(-1)
+            output = output + x_in
         return output
 
 
 class block(nn.Module):
-    def __init__(self, input_channels, input_dims, filters, kernel):
+    def __init__(self, input_channels, input_dims, filters, kernel, skips=False):
         super(block, self).__init__()
-        self.c1D1 = c1D(input_channels, input_dims, filters, kernel)
-        self.c1D2 = c1D(input_channels, filters, filters, kernel)
+        self.skips = skips
+        self.c1D1 = c1D(input_channels, input_dims, filters, kernel, skips)
+        self.c1D2 = c1D(input_channels, filters, filters, kernel, skips)
 
     def forward(self, x):
         output = self.c1D1(x)
@@ -436,17 +562,26 @@ class block(nn.Module):
 
 
 class d1D(nn.Module):
-    def __init__(self, input_dims, filters, linear=False):
+    def __init__(self, input_dims, filters, linear=False, skips=False):
         super(d1D, self).__init__()
+        self.skips = skips
+        self.non_linear = not linear
         self.linear = nn.Linear(input_dims, filters)
         self.bn = nn.BatchNorm1d(num_features=filters)
 
     def forward(self, x):
         output = self.linear(x)
         output = self.bn(output)
-        if not self.linear:
+        if self.non_linear:
             output = F.leaky_relu(output, 0.2)
-        return output
+        # Residual
+        if self.skips:
+            # Downsample if needed
+            if output.shape[1] != x.shape[1]:
+                x = F.interpolate(x.unsqueeze(1), size=(output.shape[1],), mode='nearest').squeeze(1)
+            return output + x
+        else:
+            return output
 
 
 class spatialDropout1D(nn.Module):
@@ -464,8 +599,9 @@ class spatialDropout1D(nn.Module):
 class DDNet_Original(nn.Module):
     def __init__(self, frame_l, joint_n, joint_d, feat_d, filters, class_num, 
                  sample_format, input_kpts,
-                 m_branch=True, f_branch=False,
-                 num_linear=1):
+                 m_branch=True, 
+                 f_branch=False, f_branch_type='lin_embed', f_branch_preconcat_layers=0,
+                 num_linear=1, linear_size=128, skip_connections=False):
         super(DDNet_Original, self).__init__()
         self.frame_l = frame_l
         self.joint_n = joint_n
@@ -477,10 +613,17 @@ class DDNet_Original(nn.Module):
         self.input_kpts = input_kpts
         self.m_branch = m_branch
         self.f_branch = f_branch
+        self.f_branch_type = f_branch_type
+        self.f_branch_preconcat_layers = f_branch_preconcat_layers
         self.num_linear = num_linear
+        self.lin_size = linear_size
+        self.skip_connections = skip_connections
 
         # self.num_hand_features = 21 #15
         self.num_hand_features = 15 #15
+        self.f_branch_warming_up = False
+
+        conv_kernel_size = 3 #3
 
         # JCD part
         self.jcd_conv1 = nn.Sequential(
@@ -489,12 +632,12 @@ class DDNet_Original(nn.Module):
         )
         self.jcd_conv2 = nn.Sequential(
             c1D(frame_l, 2 * filters, filters, 3),
-            spatialDropout1D(0.1)
+            spatialDropout1D(0.1), 
         )
         self.jcd_conv3 = c1D(frame_l, filters, filters, 1)
         self.jcd_pool = nn.Sequential(
             nn.MaxPool1d(kernel_size=2),
-            spatialDropout1D(0.1)
+            spatialDropout1D(0.1),
         )
 
         if self.m_branch:
@@ -517,9 +660,9 @@ class DDNet_Original(nn.Module):
             self.fast_conv1 = nn.Sequential(
                 c1D(frame_l//2, joint_n * joint_d, 2 * filters, 1), spatialDropout1D(0.1))
             self.fast_conv2 = nn.Sequential(
-                c1D(frame_l//2, 2 * filters, filters, 3), spatialDropout1D(0.1))
+                c1D(frame_l//2, 2 * filters, filters, 3,), spatialDropout1D(0.1))
             self.fast_conv3 = nn.Sequential(
-                c1D(frame_l//2, filters, filters, 1), spatialDropout1D(0.1))
+                c1D(frame_l//2, filters, filters, 1,), spatialDropout1D(0.1))
 
             self.block1_in_dims = 3 * filters
         else:
@@ -537,37 +680,56 @@ class DDNet_Original(nn.Module):
         self.block3_in_dims = self.block2_filters
         self.block3_filters = 2 * self.block2_filters
 
+        # 
+        if self.f_branch:
+            for i in range(self.f_branch_preconcat_layers):
+                setattr(self, f'pre_concat_linear{i+1}', nn.Sequential(
+                    d1D(self.lin_size, self.lin_size, skips=self.skip_connections),
+                    nn.Dropout(0.25)
+                ))
+
         # after cat
-        self.block1 = block(self.block1_in_ch, self.block1_in_dims, self.block1_filters, 3)
+        self.block1 = block(self.block1_in_ch, self.block1_in_dims, self.block1_filters, conv_kernel_size, self.skip_connections)
         self.block_pool1 = nn.Sequential(
             nn.MaxPool1d(kernel_size=2), spatialDropout1D(0.1))
 
-        self.block2 = block(self.block2_in_ch, self.block2_in_dims, self.block2_filters, 3)
+        self.block2 = block(self.block2_in_ch, self.block2_in_dims, self.block2_filters, conv_kernel_size, self.skip_connections)
         self.block_pool2 = nn.Sequential(nn.MaxPool1d(
             kernel_size=2), spatialDropout1D(0.1))
 
         self.block3 = nn.Sequential(
-            block(self.block3_in_ch, self.block3_in_dims, self.block3_filters, 3), spatialDropout1D(0.1))
+            block(self.block3_in_ch, self.block3_in_dims, self.block3_filters, conv_kernel_size, self.skip_connections), spatialDropout1D(0.1))
 
         if self.f_branch:
-            self.f_embed_size = 64
-            self.f_embed = d1D(self.num_hand_features, self.f_embed_size, linear=True)  # Linear embedding
+            if self.f_branch_type == 'lin_embed':
+                self.f_embed_size = 64
+                self.f_embed = d1D(self.num_hand_features, self.f_embed_size, linear=True)  # Linear embedding
+            elif self.f_branch_type == 'cascade_mlp':
+                self.f_embed_size = 64
+                self.f_embed = nn.Sequential(
+                    d1D(self.num_hand_features, 32),
+                    nn.Dropout(0.2),
+                    d1D(32, 64),
+                    nn.Dropout(0.3),
+                    d1D(64, self.f_embed_size),
+                    nn.Dropout(0.3),                    
+                )
 
             self.lin1_in = self.block3_filters + self.f_embed_size
         else:
             self.lin1_in = self.block3_filters
 
         self.linear1 = nn.Sequential(
-            d1D(self.lin1_in, 128),
+            d1D(self.lin1_in, self.lin_size, skips=self.skip_connections),
             nn.Dropout(0.25)
         )
         for i in range(self.num_linear-1):
             setattr(self, f'linear{i+2}', nn.Sequential(
-                d1D(128, 128),
+                d1D(self.lin_size, self.lin_size, skips=self.skip_connections),
                 nn.Dropout(0.25)
             ))
 
-        self.linear_out = nn.Linear(128, class_num)
+        self.linear_out = nn.Linear(self.lin_size, class_num)
 
     def forward(self, P, M=None):
         if self.sample_format in ['scaled_kpt', 'scaled_kpt_hf'] :
@@ -630,12 +792,20 @@ class DDNet_Original(nn.Module):
         x = torch.max(x, dim=1).values
 
         if self.f_branch:
-        #     # Get, embed, and fuse handcrafted features from pose series
-            rescale_ratios = rescale_ratios.unsqueeze(1) #.repeat([1, 10])
-        #     hand_feats = self.get_handcraft_features(P_og)
-            hand_feats = torch.cat((hand_feats, rescale_ratios), dim=1)
+            # run through pre-concat layers if needed
+            if self.f_branch_preconcat_layers > 0:
+                for i in range(self.f_branch_preconcat_layers):
+                    x = getattr(self, f'pre_concat_linear{i+1}')(x)
 
-            hand_feats = self.f_embed(hand_feats)
+        #     # Get, embed, and fuse handcrafted features from pose series
+            rescale_ratios = rescale_ratios.unsqueeze(1)
+            
+            # Disable handcraft feats until a few eps into training
+            if self.f_branch_warming_up:
+                hand_feats = torch.zeros((x.shape[0], self.f_embed_size)).to(x.device)
+            else:
+                hand_feats = torch.cat((hand_feats, rescale_ratios), dim=1)
+                hand_feats = self.f_embed(hand_feats)
             x = torch.cat((x, hand_feats), dim=1)
 
         for i in range(self.num_linear):
