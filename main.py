@@ -7,7 +7,8 @@ from tqdm import tqdm
 import wandb
 import types
 
-from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, feature_mlp, ddnet, dist_ddnet, cnn_vae
+from models import dsp_updrs, simple_mlp, simple_cnn, ratio_mlp, feature_ml, ddnet, cnn_vae
+from models.simmtm import simmtm
 
 import data.timeseries.data_timeseries as data_timeseries
 from utils import evaluation as eval_utils
@@ -21,10 +22,10 @@ def parse_args():
     parser.add_argument('--datasets', default='PD4T,CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T, dummy
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
-    parser.add_argument('--model', default='ddnet', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
+    parser.add_argument('--model', default='sim_mtm', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
-    parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
+    parser.add_argument('--num_trials', default=1, help='Number of trials to run')   # 1, 5, 10
     parser.add_argument('--num_folds', default=10, help='Number of folds for N-fold evaluation')   # 5, 10
     
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
@@ -89,6 +90,151 @@ def init_logger(args, model):
 
         wandb.init(project='auto-UPDRS', config=config)
 
+def leave_one_out(args, model, data):
+    '''
+    N_fold train/evaluation over all samples. Excluding a few subjects for testing each time.
+    '''
+    if model.name == 'feature_ml':
+        data_format = model.sample_format
+        combine_34 = model.combine_34
+    elif model.name in ['ddnet', 'dist_ddnet', 'cnn_vae']:
+        data_format = model.sample_format
+        combine_34 = model.combine_34
+    else:
+        data_format = 'unscaled'  # 'scaled', 'unscaled', 'unscaled_kpt'
+        combine_34 = True
+
+    rej_unlabelled_annot = model.labeler_idx # if not None, reject samples if this annotator has label == -1
+    rej_either = False   # if True, reject samples if any label == -1. If False, reject if all labels == -1
+    binclass_idx = 0    # positive class for binary classification
+    keep_only_agreed_labels = False # if True, keep only samples where all labels are the same
+
+    subj_ids = np.unique(data.subj_ids)
+    subj_data = data.get_subj_data(subj_ids, use_ratio=model.use_ratio, format=data_format)
+    _, _, _, rej_idxs = data_utils.remove_unlabeled(subj_data, 
+                                                    combine_34=combine_34, 
+                                                    keep_agree=keep_only_agreed_labels,
+                                                    rej_either=rej_either, 
+                                                    rej_annot=rej_unlabelled_annot)
+    data.delete_idxs(rej_idxs)
+
+    subj_ids = np.unique(data.subj_ids)
+    subj_ids = np.random.permutation(subj_ids)
+    # Set weights for loss if needed
+    if hasattr(model, 'loss_type') and model.loss_type == 'Focal':
+        class_cnt_idx = model.labeler_idx
+        class_cnt = torch.bincount(torch.tensor(data.y[:, class_cnt_idx]).long())
+        if combine_34:
+            class_cnt[3] += class_cnt[4]
+            class_cnt = class_cnt[:4]
+    else:
+        class_cnt = None
+    # Run that sucker
+    print(f'\nLeave-One-Out Eval on {len(subj_ids)} subjects:')
+    eval_preds, eval_targets, eval_ids = [], [], []
+    for i in range(len(subj_ids)):
+        eval_subjs = [subj_ids[i]]
+        eval_subj_data = data.get_subj_data([eval_subjs], format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
+        train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], 
+                                             format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
+        train_x, train_y, train_subj_ids = train_subj_data[0], train_subj_data[1], train_subj_data[2]
+        test_x, test_y, test_subj_ids = eval_subj_data[0], eval_subj_data[1], eval_subj_data[2]
+
+        # Convert to binary classification if needed
+        if args.task == 'binclass':
+            train_mask = (train_y[:, model.labeler_idx] == binclass_idx)
+            train_y[train_mask] = 1.0
+            train_y[~train_mask] = 0.0
+            test_mask = (test_y[:, model.labeler_idx] == binclass_idx)
+            test_y[test_mask] = 1.0
+            test_y[~test_mask] = 0.0
+
+        # Train and evaluate
+        if len(test_x) != 0:
+            if class_cnt != None:
+                model.init_model(class_cnts=class_cnt)
+            else: 
+                model.init_model()
+            model.trainer(train_x, train_y, train_subj_ids=train_subj_ids)
+            
+            model.eval()
+            test_x = np.mean(test_x, axis=2)[:,:178]
+            test_x = np.expand_dims(test_x, axis=1)
+            test_x = torch.tensor(test_x, dtype=torch.float32).to(args.device)
+            test_pred = model(test_x)
+            if model.name != 'feature_ml':
+                test_pred = test_pred.cpu().numpy()
+
+            print(f'Subject {i+1}: ')
+            metrics = eval_utils.get_metrics(test_pred, test_y, task=args.task)
+            print_metrics(metrics)
+
+            eval_preds.append(test_pred.reshape(-1))
+            eval_targets.append(test_y)
+            eval_ids.append(test_subj_ids)
+
+        # Save model dict
+        if args.save_model:
+            if model.name != 'feature_ml':
+                save_model_path = os.path.join(args.save_model_path, args.UPDRS_task)
+                if not os.path.exists(save_model_path):
+                    os.makedirs(save_model_path)
+                model_dict = model.get_model_dict()
+                model_dict['metrics'] = metrics
+                model_dict['seed'] = args.seed
+
+                model_name = f'{eval_model}_{args.UPDRS_task}_fold{i}.pt'
+                print(f'Saving model: {model_name} to {save_model_path}')
+                torch.save(model_dict, os.path.join(save_model_path, model_name))
+    
+    eval_preds = np.hstack(eval_preds)
+    eval_targets = np.vstack(eval_targets)
+    eval_ids = np.hstack(eval_ids)
+    metrics = eval_utils.get_metrics(eval_preds, eval_targets, 
+                                     task=args.task)
+    # normalize the confusion matrix
+    for k in [key for key in metrics.keys() if key != 'inter_rater']:
+        metrics[k]['conf_mat'] = (metrics[k]['conf_mat'] / np.sum(metrics[k]['conf_mat'], axis=1)[:, None]).round(2)
+    wandb_annot_idx = model.labeler_idx
+    if wandb.run is not None:
+        wandb.log({
+            'T_acc': metrics[wandb_annot_idx]['acc'],
+            'T_acc_t2': metrics[wandb_annot_idx]['acc_t2'],
+            'T_precision': metrics[wandb_annot_idx]['precision'],
+            'T_recall': metrics[wandb_annot_idx]['recall'],
+            'T_f1': metrics[wandb_annot_idx]['f1'],
+            'T_conf_mat': metrics[wandb_annot_idx]['conf_mat'],
+        })
+    print(f'\n--- {model.name} ---')
+    print_metrics(metrics)
+    
+    if args.rand_baseline:
+        if args.task == 'binclass':
+            # check against majority class predictor (1)
+            maj_preds = np.ones_like(eval_preds)
+            maj_metrics = eval_utils.get_metrics(maj_preds, eval_targets, 
+                                                task=args.task)
+            print("\n--- Majority Class Predictor (1) ---")
+            print_metrics(maj_metrics)
+        elif args.task == 'multiclass':
+            # get avg class counts
+            class_cnts = []
+            for rater in range(eval_targets.shape[1]):
+                class_cnts.append(np.bincount(eval_targets[:,0].astype(int), minlength=4))                        
+            class_cnts = np.mean(class_cnts, axis=0)
+
+            # check against random predictor based on train label frequency
+            possible_labels = np.unique(eval_targets)
+            freq_preds = np.random.choice(possible_labels, size=eval_targets.shape[0], 
+                                        p=class_cnts/np.sum(class_cnts))
+            freq_metrics = eval_utils.get_metrics(freq_preds, eval_targets, 
+                                                task=args.task)
+            print("\n--- Frequency Class Predictor ---")
+            print_metrics(freq_metrics)
+    
+    return metrics
+
+
 def N_fold_eval(args, model, data):
     '''
     N_fold train/evaluation over all samples. Excluding a few subjects for testing each time.
@@ -100,8 +246,8 @@ def N_fold_eval(args, model, data):
         data_format = model.sample_format
         combine_34 = model.combine_34
     else:
-        data_format = 'scaled'  # 'scaled', 'unscaled', 'unscaled_kpt'
-        combine_34 = False
+        data_format = 'unscaled'  # 'scaled', 'unscaled', 'unscaled_kpt'
+        combine_34 = True
 
     rej_unlabelled_annot = model.labeler_idx # if not None, reject samples if this annotator has label == -1
     rej_either = False   # if True, reject samples if any label == -1. If False, reject if all labels == -1
@@ -161,7 +307,15 @@ def N_fold_eval(args, model, data):
                 model.init_model(class_cnts=class_cnt)
             else: 
                 model.init_model()
-            model.train(train_x, train_y, train_subj_ids=train_subj_ids)
+            model.trainer(train_x, train_y, train_subj_ids=train_subj_ids)
+            model.eval()
+            
+            # sim_mtm require input length 178 
+            if model.name == 'sim_mtm':
+                test_x = np.mean(test_x, axis=2)[:,:178]
+                test_x = np.expand_dims(test_x, axis=1)
+                test_x = torch.tensor(test_x, dtype=torch.float32).to(args.device)
+
             test_pred = model(test_x)
             if model.name != 'feature_ml':
                 test_pred = test_pred.cpu().numpy()
@@ -259,6 +413,9 @@ if __name__ == '__main__':
         elif eval_model == 'cnn_vae':
             model = cnn_vae.CnnVae(task=args.task, datasets=args.datasets, device=args.device, 
                                    length=256, nclasses=4, transition_channels=4)
+        elif eval_model == 'sim_mtm':
+            model = simmtm.TFC(task=args.task, datasets=args.datasets, device=args.device, 
+                                   length=178)
         # FEATURE BASELINES
         elif eval_model == 'feature_ml':
             model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
@@ -282,7 +439,7 @@ if __name__ == '__main__':
 
         # Train/Eval the model
         metrics = {}
-        metrics = N_fold_eval(args, model, data)
+        metrics = leave_one_out(args, model, data)
         all_metrics[i] = metrics.copy()
 
         wandb.finish()       
