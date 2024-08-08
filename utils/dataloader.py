@@ -23,9 +23,13 @@ class CustomTensorDataset(torch.utils.data.Dataset):
                 if torch.rand(1) < transform_p:
                     # dont apply transform to ratio (final entry)
                     if self.use_ratio:
-                        x[:self.seq_len], y = transform(x[:self.seq_len], y)
+                        x, y = transform(x[:self.seq_len], y)
                     else:
-                        x, y = transform(x, y)
+                        x, y = transform(x[:self.seq_len], y)
+                else:
+                    x = x[:self.seq_len]
+        else:
+            x = x[:self.seq_len]
         return x, y
     
     def __len__(self):
