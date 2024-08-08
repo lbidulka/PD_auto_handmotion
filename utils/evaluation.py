@@ -2,25 +2,26 @@ import numpy as np
 import sklearn.metrics
 
 
-def get_metrics(y_pred, y_true, task):
+def get_metrics(y_pred, y_true, task, average_type='macro'):
     '''
     Given true and predicted labels, return accuracy, precision, recall, f1
-
-    TODO: add support for y_true to contain labels from multiple raters, and 
-    report per-rater metrics + return inter-rater agreement metric(s)
     '''
     metrics = {}
     for i in range(y_true.shape[1]):
         y_rater = y_true[:, i]
         acc = np.mean(y_rater == y_pred)
+        bal_acc = sklearn.metrics.balanced_accuracy_score(y_rater, y_pred)
         acc_t2 = np.mean(np.abs(y_rater - y_pred) <= 1) # accuracy, allowing for labels within 1 of each other
-        precision = np.sum((y_rater == 1) & (y_pred == 1)) / np.sum(y_pred == 1)
-        recall = np.sum((y_rater == 1) & (y_pred == 1)) / np.sum(y_rater == 1)
-        f1 = sklearn.metrics.f1_score(y_rater, y_pred, average='weighted')
+        # precision = np.sum((y_rater == 1) & (y_pred == 1)) / np.sum(y_pred == 1)
+        # recall = np.sum((y_rater == 1) & (y_pred == 1)) / np.sum(y_rater == 1)
+        precision = sklearn.metrics.precision_score(y_rater, y_pred, average=average_type)
+        recall = sklearn.metrics.recall_score(y_rater, y_pred, average=average_type)
+        f1 = sklearn.metrics.f1_score(y_rater, y_pred, average=average_type)
         conf_mat = sklearn.metrics.confusion_matrix(y_rater, y_pred)
 
         metrics[i] = {
-            'acc': acc,
+            # 'acc': acc,
+            'bal_acc': bal_acc,
             'acc_t2': acc_t2,
             'precision': precision,
             'recall': recall,
