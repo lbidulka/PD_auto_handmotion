@@ -42,14 +42,14 @@ class TFC(torch.nn.Module):
         self.datasets = datasets
         self.device = torch.device(device) #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.combine_34 = True
-        self.sample_format = 'unscaled'   # input data format: 'scaled_kpt', 'unscaled_kpt', 'scaled', 'unscaled'
+        self.sample_format = 'scaled' #'unscaled'   # input data format: 'scaled_kpt', 'unscaled_kpt', 'scaled', 'unscaled'
 
         self.use_ratio = False
         self.sequence_len = length
         self.labeler_idx = 1
-        self.val_frac = 0.2
-        self.transforms = []#[loader.noise_rand, loader.scale_rand]
-        self.transforms_p = []#[0.9, 0.9]
+        self.val_frac = 0.25
+        self.transforms = []#loader.noise_rand, loader.scale_rand]#[loader.noise_rand, loader.scale_rand]
+        self.transforms_p = []#0.9, 0.9]#[0.9, 0.9]
 
         self.loss_type = 'Focal'
         self.focal_gamma = 1.5    #1.5
@@ -92,7 +92,7 @@ class TFC(torch.nn.Module):
         self.contrastive = ContrastiveWeight(configs)
         self.aggregation = AggregationRebuild(configs)
         self.head = nn.Linear(1280, 178)
-        self.mse = torch.nn.MSELoss()
+        self.loss = torch.nn.MSELoss()
 
         self.classifier = target_classifier(configs)
         self.to(self.device)
@@ -115,7 +115,7 @@ class TFC(torch.nn.Module):
             rebuild_weight_matrix, agg_x = self.aggregation(similarity_matrix, x)
             pred_x = self.head(agg_x.reshape(agg_x.size(0), -1))
 
-            loss_rb = self.mse(pred_x, x_in_t.reshape(x_in_t.size(0), -1).detach())
+            loss_rb = self.loss(pred_x, x_in_t.reshape(x_in_t.size(0), -1).detach())
             loss = self.awl(loss_cl, loss_rb)
 
             return loss, loss_cl, loss_rb, pred_x, predictions

@@ -25,13 +25,14 @@ def parse_args():
     parser.add_argument('--model', default='sim_mtm', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
-    parser.add_argument('--num_trials', default=1, help='Number of trials to run')   # 1, 5, 10
+    parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
     parser.add_argument('--num_folds', default=10, help='Number of folds for N-fold evaluation')   # 5, 10
+    parser.add_argument('--leave_one_out', default=False, help='Leave one out evaluation?')   # True False
     
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
     parser.add_argument('--save_model_path', default='./checkpoints/', help='Path to save models')
 
-    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -94,10 +95,10 @@ def leave_one_out(args, model, data):
     '''
     N_fold train/evaluation over all samples. Excluding a few subjects for testing each time.
     '''
-    if model.name == 'feature_ml':
-        data_format = model.sample_format
-        combine_34 = model.combine_34
-    elif model.name in ['ddnet', 'dist_ddnet', 'cnn_vae']:
+    # if model.name == 'feature_ml':
+    #     data_format = model.sample_format
+    #     combine_34 = model.combine_34
+    if model.name in ['feature_ml', 'ddnet', 'dist_ddnet', 'cnn_vae', 'sim_mtm']:
         data_format = model.sample_format
         combine_34 = model.combine_34
     else:
@@ -132,7 +133,7 @@ def leave_one_out(args, model, data):
     # Run that sucker
     print(f'\nLeave-One-Out Eval on {len(subj_ids)} subjects:')
     eval_preds, eval_targets, eval_ids = [], [], []
-    for i in range(len(subj_ids)):
+    for i in tqdm(range(len(subj_ids))):
         eval_subjs = [subj_ids[i]]
         eval_subj_data = data.get_subj_data([eval_subjs], format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
         train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], 
@@ -239,10 +240,10 @@ def N_fold_eval(args, model, data):
     '''
     N_fold train/evaluation over all samples. Excluding a few subjects for testing each time.
     '''
-    if model.name == 'feature_ml':
-        data_format = model.sample_format
-        combine_34 = model.combine_34
-    elif model.name in ['ddnet', 'dist_ddnet', 'cnn_vae']:
+    # if model.name == 'feature_ml':
+    #     data_format = model.sample_format
+    #     combine_34 = model.combine_34
+    if model.name in ['feature_ml', 'ddnet', 'dist_ddnet', 'cnn_vae', 'sim_mtm']:
         data_format = model.sample_format
         combine_34 = model.combine_34
     else:
@@ -439,7 +440,10 @@ if __name__ == '__main__':
 
         # Train/Eval the model
         metrics = {}
-        metrics = leave_one_out(args, model, data)
+        if args.leave_one_out:
+            metrics = leave_one_out(args, model, data)
+        else:
+            metrics = N_fold_eval(args, model, data)
         all_metrics[i] = metrics.copy()
 
         wandb.finish()       
