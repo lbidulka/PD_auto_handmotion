@@ -31,15 +31,15 @@ class Feature_ML():
         self.labeler_idx = 1
         self.combine_34 = True
         self.equalize_class_samples = True
-        self.n_selected_features = 15   # 20
+        self.n_selected_features = 20 #15   # 20, None if want to use all features
 
         self.min_num_peaks = 7
         self.amp_dec_thresh = 0.9
         self.hesitation_resid_thresh = 0.2
-        self.use_ratio = False
+        self.use_ratio = True
 
         # self.sample_format = 'scaled' # unscaled, scaled
-        self.sample_format = 'scaled_kpt_hf'
+        self.sample_format = 'scaled_kpt_hf' #'scaled_kpt_hf'
         if self.sample_format in ['scaled_kpt', 'scaled_kpt_hf']: self.use_ratio = True
 
     def __call__(self, x,):
@@ -276,7 +276,7 @@ class Feature_ML():
                 # selected_features.append(feature)
             self.selected_features.append(feature)
             n_features+=1
-            if n_features>n_selected_feature:
+            if n_features >= n_selected_feature:
                 break
 
     def augment_data(self, x_in, y_in):
@@ -313,6 +313,9 @@ class Feature_ML():
         # y_aug = np.vstack([y_in, aug_data[1]])
         return x_aug, y_aug
 
+    def trainer(self, x, y, train_subj_ids=None,):
+        self.train(x, y, train_subj_ids)
+
     def train(self, x, y, train_subj_ids = None, x_val=None, y_val=None,):
         # get dists and ratio if needed
         if self.sample_format in ['scaled_kpt_hf',]:
@@ -324,17 +327,17 @@ class Feature_ML():
             x_feats = x_feats[:, x_feats[0] != -99]
             # average_input = utils.features.get_finger_palm_distance(x_poses).mean(axis=2)
             features_input = np.hstack([x_feats, x_ratios])
-            self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21,  24, 25, 26, 27, 34, 35, -1]
+            # self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21, 24, 25, 26, 27, 34, 35, -1]
+            # self.selected_features.append(38)   # root coord std()
         else:
             # get avg fing dists, then features
             if isinstance(x, np.ndarray):
                 average_input = np.mean(x, axis=2)  # avg over fingers
                 average_input, y = self.augment_data(average_input, y)
-                features_input = self.get_features(average_input) # get features
             else:
                 average_input = []
                 average_input = [x[i].mean(axis = 1) for i in range(len(x))]
-                features_input = self.get_features(average_input) # get features
+            features_input = self.get_features(average_input) # get features
 
         if self.equalize_class_samples:
             features_input, y = utils.data.equalize_class_samples(features_input, y)
@@ -344,9 +347,15 @@ class Feature_ML():
         features_input = self.scaler.transform(features_input)
 
         label = y[:, self.labeler_idx]
-        # self.information_gain_feature_selection(features_input, label, n_selected_feature=self.n_selected_features)
-        
         # self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21, 25, 34, 35, 44, 43, 42]
+
+        if self.n_selected_features is not None:
+            self.information_gain_feature_selection(features_input, label, n_selected_feature=self.n_selected_features)
+            if self.use_ratio:
+                self.selected_features.append(-1)
+        else:
+            self.selected_features = [i for i in range(features_input.shape[1])]
+
         features_input = features_input[:, self.selected_features]
 
         self.classifier = self.classifier.fit(features_input, label)
@@ -354,5 +363,11 @@ class Feature_ML():
     def init_model(self,):
         '''
         Initialize the model (DUMMY, SINCE THIS IS DSP BASED)
+        '''
+        pass
+
+    def eval(self,):
+        '''
+        Set model to eval (DUMMY)
         '''
         pass

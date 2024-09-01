@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import os
+from scipy.signal import savgol_filter
 
 import utils.data as data_utils
 import utils.features
@@ -10,6 +11,7 @@ class data_timeseries():
     def __init__(self, datasets=None, UPDRS_task=None, kpts_uniform_len=256) -> None:
         self.fingertip_kpts = [8, 12, 16, 20]  # all finger tips
         self.kpts_uniform_len = kpts_uniform_len
+        self.smooth_rescaled_kpts = False
 
         self.dataset_framerates = {
             'PD4T': 25,
@@ -90,20 +92,38 @@ class data_timeseries():
         self.handednesses = np.hstack(handednesses)
         self.upscale_ratios = np.hstack(upscale_ratios)
 
+        if self.smooth_rescaled_kpts:
+            self.x_kpts = self.smooth_kpts(self.x_kpts, window=5, order=0)
+
         # compute handcrafted features
+        # self.handcraft_feats = self.get_handcraft_features(self.x_unscaled)
         self.handcraft_feats = self.get_handcraft_features(torch.tensor(self.x_kpts))
 
         return 
     
+    def smooth_kpts(self, x_kpts, window=3, order=0):
+        '''
+        Smooth the keypoints in x_kpts
+        '''
+        for i, ts in enumerate(x_kpts):
+            for j in range(ts.shape[1]):
+                for k in range(3):
+                    x_kpts[i, :, j, k] = savgol_filter(ts[:, j, k], window, order)
+        return x_kpts        
+
     def get_handcraft_features(self, P):
         '''
         Compute some handcrafted features given the input batch of pose series P
 
         args:
-            P: (B, frame_l, joint_n, joint_d) tensor
+            P: (B, frame_l, joint_n, joint_d) tensor or np array of dists (B, seq len, 4)
         '''
         # Get finger-palm distances & cycle peaks/valleys/idxs
-        dists = utils.features.get_finger_palm_distance(P.cpu())
+        if (len(P[0].shape) == 2):
+            dists = P
+        else:
+            dists = utils.features.get_finger_palm_distance(P.cpu())
+        # dists = [d[:,:3] for d in dists]
         dists = [dist.mean(axis=1) for dist in dists]
         peak_idxs, peak_vals = utils.features.get_cycle_peaks(dists, keep=10, savgol_win=5, prominence=0.10, min_peak_dist=10)
         valley_idxs, valley_vals = utils.features.get_cycle_valleys(dists, peak_idxs, savgol_win=5)
@@ -133,13 +153,20 @@ class data_timeseries():
         total_distance_travelled_std = [np.std(dist) for dist in cycle_feats[1]]
         cycle_times_mean = [np.mean(times) for times in cycle_feats[2]]
         cycle_times_std = [np.std(times) for times in cycle_feats[2]]
-        total_average_speed_mean = [np.mean(spd) for spd in cycle_feats[3]]
-        total_average_speed_std = [np.std(spd) for spd in cycle_feats[3]]
+        effective_average_speed_mean = [np.mean(spd) for spd in cycle_feats[3]]
+        effective_average_speed_std = [np.std(spd) for spd in cycle_feats[3]]
+        total_average_speed_mean = [np.mean(spd) for spd in cycle_feats[4]]
+        total_average_speed_std = [np.std(spd) for spd in cycle_feats[4]]
         smoothness_mean = [np.mean(s) for s in cycle_feats[5]]
         smoothness_std = [np.std(s) for s in cycle_feats[5]]
+        peak_width_mean = [np.mean(w) for w in peak_width]
+        peak_width_std = [np.std(w) for w in peak_width]
+        valley_width_mean = [np.mean(w) for w in valley_width]
+        valley_width_std = [np.std(w) for w in valley_width]
 
         # Other features
         amp_fft_var = utils.features.get_fft_var(dists)
+        root_motion_var = [p[:,0].std() for p in P]
 
         # combine all features into vector for each sample
         all_features = []
@@ -157,15 +184,24 @@ class data_timeseries():
                 all_features[i].append(total_distance_travelled_std[i])
                 all_features[i].append(cycle_times_mean[i])
                 all_features[i].append(cycle_times_std[i])
+                all_features[i].append(effective_average_speed_mean[i])
+                all_features[i].append(effective_average_speed_std[i])
                 all_features[i].append(total_average_speed_mean[i])
                 all_features[i].append(total_average_speed_std[i])
                 all_features[i].append(smoothness_mean[i])
                 all_features[i].append(smoothness_std[i])
                 all_features[i].append(amp_fft_var[i])
+                all_features[i].append(peak_width_mean[i])
+                all_features[i].append(peak_width_std[i])
+                all_features[i].append(valley_width_mean[i])
+                all_features[i].append(valley_width_std[i])
+                all_features[i].append(utils.features.get_hesitations_peaks_th(peak_vals[i], threshold=1))
+                all_features[i].append(utils.features.get_hesitations_valleys_th(valley_vals[i], threshold=0.5))
+                # all_features[i].append(root_motion_var[i])
             else: 
-                all_features[i] = [0]*(14 + 24)
+                all_features[i] = [0]*(22 + 25)
         all_features = np.array(all_features)
-        features = torch.tensor(all_features, device=P.device).float()
+        features = torch.tensor(all_features, device=P.device if hasattr(P, 'device') else None).float()
         
         if torch.isnan(features).any():
             features[torch.isnan(features)] = 0

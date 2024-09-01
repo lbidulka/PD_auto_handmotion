@@ -97,11 +97,15 @@ class DDNet(Base_DeepNet):
         self.m_branch = True  # Use motion branch?
         # Feature branch options
         self.f_branch = True  # Use handcrafted feature branch?
+        self.f_branch_n_HF_feats = 20  # number of handcrafted features to select with info gain
         self.f_branch_type = 'lin_embed'  # lin_embed, cascade_mlp
         self.f_branch_preconcat_layers = 0  # number of layers before concat with handcraft feats
         self.f_branch_warmup_eps = 0   # no. to train kpt branches before enabling handcraft branch
 
         self.skip_connections = True
+
+        # self.best_features_ids = [0, 1, 2, 4, 6, 10, 15, 21, 24, 25, 26, 27, 34, 35, ]#38] # 38(root coord std())
+        self.best_features_ids = [i for i in range(self.f_branch_n_HF_feats)] # 24
 
         # Task
         self.task = task
@@ -169,8 +173,8 @@ class DDNet(Base_DeepNet):
                 if self.UPDRS_task == 'hand_movement':
 
                     self.batch_size = 128
-                    self.focal_gamma = 1.5    #1.5
-                    self.num_epochs = 100
+                    self.focal_gamma = 2    #1.5
+                    self.num_epochs = 75 #100
                     
                     if (self.f_branch_type == 'lin_embed'):
                         if self.skip_connections:
@@ -199,7 +203,7 @@ class DDNet(Base_DeepNet):
             # self.loss_type = 'CrossEntropy'
             self.loss_type = 'Focal' #'Focal', 'OF'
 
-            self.scheduler_type = 'cosine' #'cosine', None, 
+            self.scheduler_type = None #'cosine' #'cosine', None, 
             self.scheduler_lr_min = 1e-5
             self.scheduler_T_max = int(self.num_epochs*2)
             self.print_lr = False
@@ -218,7 +222,7 @@ class DDNet(Base_DeepNet):
     def _build_model(self, *args, **kwargs):
         self.model = DDNet_Original(self.frame_l, self.joint_n, self.joint_d, self.feat_d, self.filters, self.clc, 
                                     self.sample_format, self.input_kpts, self.m_branch, 
-                                    self.f_branch, self.f_branch_type, self.f_branch_preconcat_layers,
+                                    self.f_branch, self.f_branch_type, self.f_branch_preconcat_layers, len(self.best_features_ids),
                                     self.num_linear, self.linear_size, self.skip_connections)
         self.model.to(self.device)
         self._build_criterion(*args, **kwargs)
@@ -245,6 +249,9 @@ class DDNet(Base_DeepNet):
         elif self.task == 'binclass':
             self.criterion = torch.nn.BCELoss(reduction='none')
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+
+    def eval(self,):
+        self.model.eval()
 
     def __call__(self, x, reduce='mean'):
         '''
@@ -420,6 +427,9 @@ class DDNet(Base_DeepNet):
         selected_features_ids = [feat for feat, score in sorted_features[:n_selected_feature]]
         return selected_features_ids
 
+    def trainer(self, x, y, train_subj_ids=None,):
+        self.train(x, y, train_subj_ids=train_subj_ids)
+
     def train(self, x, y, 
               train_subj_ids=None,
               x_val=None, y_val=None):
@@ -462,8 +472,9 @@ class DDNet(Base_DeepNet):
             x_feats = self.f_scaler.transform(x_feats)
 
             # Get subset of features
-            # self.best_features_ids = self.information_gain_feature_selection(x_feats, y_clips[:, self.labeler_idx], 20)
-            self.best_features_ids = [0, 1, 2, 4, 6, 10, 15, 21, 24, 25, 26, 27, 34, 35]
+            if self.f_branch_n_HF_feats is not None:
+                self.best_features_ids = self.information_gain_feature_selection(x_feats, y_clips[:, self.labeler_idx], self.f_branch_n_HF_feats)
+            # self.best_features_ids = [0, 1, 2, 4, 6, 10, 15, 21, 24, 25, 26, 27, 34, 35, 38] #(root coord std())
             x_feats = x_feats[:, self.best_features_ids]
 
             # reshape & pad to match model input
@@ -518,14 +529,16 @@ def get_CG(p, joint_n, frame_l):
 class c1D(nn.Module):
     # input (B,C,D) //batch,channels,dims
     # output = (B,C,filters)
-    def __init__(self, input_channels, input_dims, filters, kernel, skips=False):
+    def __init__(self, input_channels, input_dims, filters, kernel, skips=False, linear=False):
         super(c1D, self).__init__()
         self.skips = skips
+        self.linear = linear
         self.cut_last_element = (kernel % 2 == 0)
         self.padding = math.ceil((kernel - 1)/2)
         self.conv1 = nn.Conv1d(input_dims, filters,
                                kernel, bias=False, padding=self.padding)
         self.bn = nn.BatchNorm1d(num_features=input_channels)
+        self.relu = nn.ReLU() #nn.LeakyReLU(0.2)
 
     def forward(self, x_in):
         # x (B,D,C)
@@ -538,26 +551,36 @@ class c1D(nn.Module):
         # output = (B,C,filters)
         output = output.permute(0, 2, 1)
         output = self.bn(output)
-        output = F.leaky_relu(output, 0.2, True)
         # Residual
         if self.skips:
             # Downsample if needed
             if output.shape[-1] != x_in.shape[-1]:
                 x_in = F.interpolate(x_in, size=(output.shape[-1],), mode='nearest').squeeze(-1)
             output = output + x_in
+        if not self.linear:
+            output = self.relu(output)
         return output
 
 
-class block(nn.Module):
+class cnn_block(nn.Module):
     def __init__(self, input_channels, input_dims, filters, kernel, skips=False):
-        super(block, self).__init__()
+        super(cnn_block, self).__init__()
         self.skips = skips
-        self.c1D1 = c1D(input_channels, input_dims, filters, kernel, skips)
-        self.c1D2 = c1D(input_channels, filters, filters, kernel, skips)
+        self.c1D1 = c1D(input_channels, input_dims, filters, kernel)
+        self.c1D2 = c1D(input_channels, filters, filters, kernel, linear=self.skips)  # have to apply activation after skip
+        if self.skips:
+            self.c_identity = nn.Conv1d(input_dims, filters, 1)
+            self.relu = nn.ReLU() #nn.LeakyReLU(0.2)
 
     def forward(self, x):
         output = self.c1D1(x)
         output = self.c1D2(output)
+        # Residual
+        if self.skips:
+            if output.shape[-1] != x.shape[-1]:
+                skip = self.c_identity(x.permute(0,2,1)).permute(0,2,1)
+            output = output + skip
+            output = self.relu(output)
         return output
 
 
@@ -567,21 +590,24 @@ class d1D(nn.Module):
         self.skips = skips
         self.non_linear = not linear
         self.linear = nn.Linear(input_dims, filters)
+        if self.skips:
+            self.l_identity = nn.Linear(input_dims, filters)
         self.bn = nn.BatchNorm1d(num_features=filters)
+        self.relu = nn.ReLU() #nn.LeakyReLU(0.2)
 
     def forward(self, x):
         output = self.linear(x)
         output = self.bn(output)
-        if self.non_linear:
-            output = F.leaky_relu(output, 0.2)
         # Residual
         if self.skips:
             # Downsample if needed
             if output.shape[1] != x.shape[1]:
-                x = F.interpolate(x.unsqueeze(1), size=(output.shape[1],), mode='nearest').squeeze(1)
-            return output + x
-        else:
-            return output
+                # x = F.interpolate(x.unsqueeze(1), size=(output.shape[1],), mode='nearest').squeeze(1)
+                x = self.l_identity(x)
+            output += x
+        if self.non_linear:
+            output = self.relu(output)
+        return output
 
 
 class spatialDropout1D(nn.Module):
@@ -600,7 +626,7 @@ class DDNet_Original(nn.Module):
     def __init__(self, frame_l, joint_n, joint_d, feat_d, filters, class_num, 
                  sample_format, input_kpts,
                  m_branch=True, 
-                 f_branch=False, f_branch_type='lin_embed', f_branch_preconcat_layers=0,
+                 f_branch=False, f_branch_type='lin_embed', f_branch_preconcat_layers=0, f_branch_num_feats=15,
                  num_linear=1, linear_size=128, skip_connections=False):
         super(DDNet_Original, self).__init__()
         self.frame_l = frame_l
@@ -620,7 +646,7 @@ class DDNet_Original(nn.Module):
         self.skip_connections = skip_connections
 
         # self.num_hand_features = 21 #15
-        self.num_hand_features = 15 #15
+        self.num_hand_features = f_branch_num_feats + 1 #15   add 1 for rescale ratio
         self.f_branch_warming_up = False
 
         conv_kernel_size = 3 #3
@@ -689,16 +715,16 @@ class DDNet_Original(nn.Module):
                 ))
 
         # after cat
-        self.block1 = block(self.block1_in_ch, self.block1_in_dims, self.block1_filters, conv_kernel_size, self.skip_connections)
+        self.block1 = cnn_block(self.block1_in_ch, self.block1_in_dims, self.block1_filters, conv_kernel_size, self.skip_connections)
         self.block_pool1 = nn.Sequential(
             nn.MaxPool1d(kernel_size=2), spatialDropout1D(0.1))
 
-        self.block2 = block(self.block2_in_ch, self.block2_in_dims, self.block2_filters, conv_kernel_size, self.skip_connections)
+        self.block2 = cnn_block(self.block2_in_ch, self.block2_in_dims, self.block2_filters, conv_kernel_size, self.skip_connections)
         self.block_pool2 = nn.Sequential(nn.MaxPool1d(
             kernel_size=2), spatialDropout1D(0.1))
 
         self.block3 = nn.Sequential(
-            block(self.block3_in_ch, self.block3_in_dims, self.block3_filters, conv_kernel_size, self.skip_connections), spatialDropout1D(0.1))
+            cnn_block(self.block3_in_ch, self.block3_in_dims, self.block3_filters, conv_kernel_size, self.skip_connections), spatialDropout1D(0.1))
 
         if self.f_branch:
             if self.f_branch_type == 'lin_embed':
@@ -734,9 +760,9 @@ class DDNet_Original(nn.Module):
     def forward(self, P, M=None):
         if self.sample_format in ['scaled_kpt', 'scaled_kpt_hf'] :
             # remove rescale ratio from end of sample
-            rescale_ratios = P[:, -1, 0, 0]
+            rescale_ratios = P[:,-1, 0, 0]
             if self.f_branch:
-                hand_feats = P[:, -2].reshape(P.shape[0], -1)[:, :self.num_hand_features-1]
+                hand_feats = P[:, -2].flatten(1)[:, :self.num_hand_features - 1]
                 # hand_feats = self.f_embed(hand_feats)
 
             P = P[:, :self.frame_l]

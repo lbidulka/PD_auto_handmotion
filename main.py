@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument('--datasets', default='PD4T,CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T, dummy
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
-    parser.add_argument('--model', default='sim_mtm', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
+    parser.add_argument('--model', default='ddnet', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
     parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
     parser.add_argument('--save_model_path', default='./checkpoints/', help='Path to save models')
 
-    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -252,7 +252,7 @@ def N_fold_eval(args, model, data):
 
     rej_unlabelled_annot = model.labeler_idx # if not None, reject samples if this annotator has label == -1
     rej_either = False   # if True, reject samples if any label == -1. If False, reject if all labels == -1
-    binclass_idx = 0    # positive class for binary classification
+    binclass_idx = 1    # positive class for binary classification
     keep_only_agreed_labels = False # if True, keep only samples where all labels are the same
 
     subj_ids = np.unique(data.subj_ids)
