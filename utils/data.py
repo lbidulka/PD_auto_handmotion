@@ -54,6 +54,7 @@ def make_subj_folds(subj_ids, N, data,
     eval_folds = []
     eval_fold_labels = []
     eval_fold_dists = []
+    max_label = int(data.y[:,annot_id].max()+1)
     for i in range(N):
         num_eval_subjs = len(subj_ids) // N
         eval_subjs = subj_ids[i*num_eval_subjs:(i+1)*num_eval_subjs]
@@ -62,7 +63,7 @@ def make_subj_folds(subj_ids, N, data,
         # to ensure that the distribution is similar across all folds
         fold_data = data.get_subj_data(eval_subjs, format=data_format, use_ratio=use_ratio, combine_34=combine_34)
         fold_labels = fold_data[1][:, annot_id]
-        label_dist = np.bincount(fold_labels.flatten().astype(int), minlength=4)        
+        label_dist = np.bincount(fold_labels.flatten().astype(int), minlength=max_label)
         eval_folds.append(eval_subjs)
         eval_fold_labels.append(fold_labels)
         eval_fold_dists.append(label_dist)
@@ -80,6 +81,8 @@ def make_subj_folds(subj_ids, N, data,
         off_avg_tol = [30, 30, 30, 3.5]
     else:
         raise ValueError(f"Invalid dataset: {datasets}")
+    if max_label >= 4:
+            off_avg_tol = [30, 30, 30, 3.5, 1]
     unacceptable_folds = True
     iters = 0
     while unacceptable_folds and (iters < max_iters):
@@ -104,7 +107,7 @@ def make_subj_folds(subj_ids, N, data,
 
             fold_data = data.get_subj_data(eval_subjs, format=data_format, use_ratio=use_ratio, combine_34=combine_34)
             fold_labels = fold_data[1][:, annot_id]
-            label_dist = np.bincount(fold_labels.flatten().astype(int), minlength=4)        
+            label_dist = np.bincount(fold_labels.flatten().astype(int), minlength=max_label)        
             eval_folds.append(eval_subjs)
             eval_fold_labels.append(fold_labels)
             eval_fold_dists.append(label_dist)
@@ -118,7 +121,9 @@ def make_subj_folds(subj_ids, N, data,
             class_4_mask = np.array([True, True, True, True])
         else:
             raise ValueError(f"Invalid dataset: {datasets}")
-        out_of_tol = np.any(np.abs(eval_fold_dists - (total_dist / N)) > off_avg_tol, where=class_4_mask)
+        if max_label >= 4:
+            class_4_mask = np.array([True, True, True, True, True])
+        out_of_tol = np.any(np.abs(np.array(eval_fold_dists) - (total_dist / N)) > off_avg_tol, where=class_4_mask)
         # if any folds have 0 in a class
         has_0cnt = np.any([np.all(eval_fold_dists, axis=1) == 0])
 
@@ -153,8 +158,8 @@ def equalize_class_samples(x_tensor_in, y_tensor_in, weight_annot_idx=1):
     Equalize the number of samples for each class in the dataset
     by repeating samples from the minority classes
     '''
-    x_tensor = x_tensor_in.copy()
-    y_tensor = y_tensor_in.copy()
+    x_tensor = np.array(x_tensor_in)
+    y_tensor = np.array(y_tensor_in)
     # largest count will be the final target count
     class_sample_count = np.array(
         [len(y_tensor[y_tensor[:,weight_annot_idx] == t]) for t in np.unique(y_tensor)])

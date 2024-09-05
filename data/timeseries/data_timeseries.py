@@ -110,103 +110,10 @@ class data_timeseries():
                 for k in range(3):
                     x_kpts[i, :, j, k] = savgol_filter(ts[:, j, k], window, order)
         return x_kpts        
-
-    def get_handcraft_features(self, P):
-        '''
-        Compute some handcrafted features given the input batch of pose series P
-
-        args:
-            P: (B, frame_l, joint_n, joint_d) tensor or np array of dists (B, seq len, 4)
-        '''
-        # Get finger-palm distances & cycle peaks/valleys/idxs
-        if (len(P[0].shape) == 2):
-            dists = P
-        else:
-            dists = utils.features.get_finger_palm_distance(P.cpu())
-        # dists = [d[:,:3] for d in dists]
-        dists = [dist.mean(axis=1) for dist in dists]
-        peak_idxs, peak_vals = utils.features.get_cycle_peaks(dists, keep=10, savgol_win=5, prominence=0.10, min_peak_dist=10)
-        valley_idxs, valley_vals = utils.features.get_cycle_valleys(dists, peak_idxs, savgol_win=5)
-        peak_idxs, peak_vals, valley_idxs, valley_vals, peak_width, valley_width = utils.features.adjust_peaks(dists, peak_idxs, peak_vals, valley_idxs, valley_vals)
-        # peak_idxs = np.array(peak_idxs)
-        # peak_vals = np.array(peak_vals)
-
-        min_num_peaks = 7
-        hesitation_resid_thresh = 0.2
-        amp_dec_thresh = 0.9
-
-        # UPDRS features
-        num_hesitations = utils.features.get_UPDRS_num_hesitations(peak_idxs, peak_vals, 
-                                                                min_num_peaks, hesitation_resid_thresh, score=False)
-        amp_dec_idxs = utils.features.get_UPDRS_amplitude_decrement(peak_vals, min_num_peaks, 
-                                                                    amp_dec_thresh, score=False)
-        slowings = utils.features.get_UPDRS_slowing(peak_idxs, min_num_peaks, score=False)
-        
-        # Catch 22 features
-        catch24_feats = utils.features.get_catch22_features(dists)
-        
-        # Cycle features
-        cycle_feats = utils.features.get_cycle_features(dists, peak_idxs, peak_vals, valley_vals)
-        effective_distance_completed_mean = [np.mean(eff_dist) for eff_dist in cycle_feats[0]]
-        effective_distance_completed_std = [np.std(eff_dist) for eff_dist in cycle_feats[0]]
-        total_distance_travelled_mean = [np.mean(dist) for dist in cycle_feats[1]]
-        total_distance_travelled_std = [np.std(dist) for dist in cycle_feats[1]]
-        cycle_times_mean = [np.mean(times) for times in cycle_feats[2]]
-        cycle_times_std = [np.std(times) for times in cycle_feats[2]]
-        effective_average_speed_mean = [np.mean(spd) for spd in cycle_feats[3]]
-        effective_average_speed_std = [np.std(spd) for spd in cycle_feats[3]]
-        total_average_speed_mean = [np.mean(spd) for spd in cycle_feats[4]]
-        total_average_speed_std = [np.std(spd) for spd in cycle_feats[4]]
-        smoothness_mean = [np.mean(s) for s in cycle_feats[5]]
-        smoothness_std = [np.std(s) for s in cycle_feats[5]]
-        peak_width_mean = [np.mean(w) for w in peak_width]
-        peak_width_std = [np.std(w) for w in peak_width]
-        valley_width_mean = [np.mean(w) for w in valley_width]
-        valley_width_std = [np.std(w) for w in valley_width]
-
-        # Other features
-        amp_fft_var = utils.features.get_fft_var(dists)
-        root_motion_var = [p[:,0].std() for p in P]
-
-        # combine all features into vector for each sample
-        all_features = []
-        for i in range(len(dists)):
-            all_features.append([])
-            if len(cycle_feats[0][i]) > 0:
-                for c24_feat in catch24_feats[i]:
-                    all_features[i].append(c24_feat)
-                all_features[i].append(num_hesitations[i])
-                all_features[i].append(amp_dec_idxs[i])
-                all_features[i].append(slowings[i])
-                all_features[i].append(effective_distance_completed_mean[i])
-                all_features[i].append(effective_distance_completed_std[i])
-                all_features[i].append(total_distance_travelled_mean[i])
-                all_features[i].append(total_distance_travelled_std[i])
-                all_features[i].append(cycle_times_mean[i])
-                all_features[i].append(cycle_times_std[i])
-                all_features[i].append(effective_average_speed_mean[i])
-                all_features[i].append(effective_average_speed_std[i])
-                all_features[i].append(total_average_speed_mean[i])
-                all_features[i].append(total_average_speed_std[i])
-                all_features[i].append(smoothness_mean[i])
-                all_features[i].append(smoothness_std[i])
-                all_features[i].append(amp_fft_var[i])
-                all_features[i].append(peak_width_mean[i])
-                all_features[i].append(peak_width_std[i])
-                all_features[i].append(valley_width_mean[i])
-                all_features[i].append(valley_width_std[i])
-                all_features[i].append(utils.features.get_hesitations_peaks_th(peak_vals[i], threshold=1))
-                all_features[i].append(utils.features.get_hesitations_valleys_th(valley_vals[i], threshold=0.5))
-                # all_features[i].append(root_motion_var[i])
-            else: 
-                all_features[i] = [0]*(22 + 25)
-        all_features = np.array(all_features)
-        features = torch.tensor(all_features, device=P.device if hasattr(P, 'device') else None).float()
-        
-        if torch.isnan(features).any():
-            features[torch.isnan(features)] = 0
-        return features
     
+    def get_handcraft_features(self, x):
+        return utils.features.get_handcraft_features(x)
+
     def scale_to_uniform_len(self, x, seq_len=256):
         '''
         Scale samples in x to uniform length, either specified or max of all samples

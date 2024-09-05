@@ -31,7 +31,7 @@ class Feature_ML():
         self.labeler_idx = 1
         self.combine_34 = True
         self.equalize_class_samples = True
-        self.n_selected_features = 20 #15   # 20, None if want to use all features
+        self.n_selected_features = None #15   # 20, None if want to use all features
 
         self.min_num_peaks = 7
         self.amp_dec_thresh = 0.9
@@ -40,7 +40,8 @@ class Feature_ML():
 
         # self.sample_format = 'scaled' # unscaled, scaled
         self.sample_format = 'scaled_kpt_hf' #'scaled_kpt_hf'
-        if self.sample_format in ['scaled_kpt', 'scaled_kpt_hf']: self.use_ratio = True
+        # if self.sample_format in ['scaled_kpt', 'scaled_kpt_hf']: self.use_ratio = True
+        if self.sample_format in ['unscaled',]: self.use_ratio = False
 
     def __call__(self, x,):
         if self.sample_format in ['scaled_kpt_hf',]:
@@ -53,16 +54,7 @@ class Feature_ML():
             # average_input = utils.features.get_finger_palm_distance(x_poses).mean(axis=2)
             features_input = np.hstack([x_feats, x_ratios])
         else:
-            # convert x from numpy to list of numpy
-            if isinstance(x, np.ndarray):
-                x = [x[i] for i in range(x.shape[0])]
-
-            # average_input = np.zeros((x.shape[0], x.shape[1]))
-            average_input = []
-            for i in range(len(x)):
-                # average_input[i,:] = x[i].mean(axis = 1)
-                average_input.append(x[i].mean(axis = 1))
-            features_input = self.get_features(average_input)
+            features_input = utils.features.get_handcraft_features(x) # get features
         features_input = self.scaler.transform(features_input)
 
         features_input = features_input[:, self.selected_features]
@@ -330,14 +322,7 @@ class Feature_ML():
             # self.selected_features = [0, 1, 2, 4, 6, 10, 15, 21, 24, 25, 26, 27, 34, 35, -1]
             # self.selected_features.append(38)   # root coord std()
         else:
-            # get avg fing dists, then features
-            if isinstance(x, np.ndarray):
-                average_input = np.mean(x, axis=2)  # avg over fingers
-                average_input, y = self.augment_data(average_input, y)
-            else:
-                average_input = []
-                average_input = [x[i].mean(axis = 1) for i in range(len(x))]
-            features_input = self.get_features(average_input) # get features
+            features_input = utils.features.get_handcraft_features(x) # get features
 
         if self.equalize_class_samples:
             features_input, y = utils.data.equalize_class_samples(features_input, y)
@@ -355,6 +340,8 @@ class Feature_ML():
                 self.selected_features.append(-1)
         else:
             self.selected_features = [i for i in range(features_input.shape[1])]
+            if (not self.use_ratio) and (self.sample_format == 'scaled_kpt_hf'):
+                self.selected_features = self.selected_features[:-1]
 
         features_input = features_input[:, self.selected_features]
 
