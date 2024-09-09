@@ -136,7 +136,7 @@ class DDNet(Base_DeepNet):
             raise NotImplementedError
         elif task == 'multiclass':
             self.joint_n = len(self.input_kpts)   # the number of joints
-            self.joint_d = 2    # the dimension of joints
+            self.joint_d = 3    # the dimension of joints
             self.clc = 4 if self.combine_34 else 5         # num classes
             if self.joint_n == 21:
                 self.feat_d = 210
@@ -174,7 +174,7 @@ class DDNet(Base_DeepNet):
 
                     self.batch_size = 128
                     self.focal_gamma = 2    #1.5
-                    self.num_epochs = 75 #100
+                    self.num_epochs = 100 #75
                     
                     if (self.f_branch_type == 'lin_embed'):
                         if self.skip_connections:
@@ -203,7 +203,7 @@ class DDNet(Base_DeepNet):
             # self.loss_type = 'CrossEntropy'
             self.loss_type = 'Focal' #'Focal', 'OF'
 
-            self.scheduler_type = None #'cosine' #'cosine', None, 
+            self.scheduler_type = 'None' #'cosine' #'cosine', None, 
             self.scheduler_lr_min = 1e-5
             self.scheduler_T_max = int(self.num_epochs*2)
             self.print_lr = False

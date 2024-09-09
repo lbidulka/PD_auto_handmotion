@@ -122,8 +122,8 @@ def get_cycle_peaks(x, min_peak_dist=60, keep=10,
         peak_window = 2
         peak_vals.append([])
         for p in peak_idxs[i]:
-            _start = min(p-peak_window, 0)
-            _end = max(p+peak_window, len(x[i]))
+            _start = max(p-peak_window, 0)
+            _end = min(p+peak_window, len(x[i]))
             peak_vals[i].append(x[i][_start:_end].mean())
         peak_vals[i] = np.array(peak_vals[i])
         

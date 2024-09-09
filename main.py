@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
     parser.add_argument('--save_model_path', default='./checkpoints/', help='Path to save models')
 
-    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -243,7 +243,7 @@ def N_fold_eval(args, model, data):
     # if model.name == 'feature_ml':
     #     data_format = model.sample_format
     #     combine_34 = model.combine_34
-    if model.name in ['feature_ml', 'ddnet', 'dist_ddnet', 'cnn_vae', 'sim_mtm']:
+    if model.name in ['feature_ml', 'ddnet', 'dist_ddnet', 'cnn_vae', 'sim_mtm', 'updrs_dsp']:
         data_format = model.sample_format
         combine_34 = model.combine_34
     else:
@@ -318,7 +318,7 @@ def N_fold_eval(args, model, data):
                 test_x = torch.tensor(test_x, dtype=torch.float32).to(args.device)
 
             test_pred = model(test_x)
-            if model.name != 'feature_ml':
+            if model.name not in ['feature_ml', 'updrs_dsp']:
                 test_pred = test_pred.cpu().numpy()
 
             print(f'Fold {i+1}: ')
@@ -399,7 +399,6 @@ if __name__ == '__main__':
         print(f'\n--- Trial {i+1} / {args.num_trials}---')
 
         eval_model = args.model #'ddnet'   # updrs_dsp, ddnet, feature_ml, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
-        classifier = 'svr' # Classifier to use for feature_ml: svr, svm, rf, dt
 
         # Define model and data
         data = data_timeseries.data_timeseries(args.datasets, args.UPDRS_task)
@@ -419,7 +418,7 @@ if __name__ == '__main__':
                                    length=178)
         # FEATURE BASELINES
         elif eval_model == 'feature_ml':
-            model = feature_ml.Feature_ML(task=args.task, classifier=classifier)
+            model = feature_ml.Feature_ML(task=args.task,)
         elif eval_model == 'feature_mlp':
             model = feature_mlp.FeatureMLP(sample_len=data.x.shape[1], in_channels=data.x.shape[2], 
                                         task=args.task,)

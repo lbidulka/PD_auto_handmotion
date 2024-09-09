@@ -11,9 +11,11 @@ import utils.dataloader
 
 # DSP based UPDRS severity classifier
 class Feature_ML():
-    def __init__(self, task, classifier) -> None:
+    def __init__(self, task,) -> None:
         self.name = 'feature_ml'
         self.task = task
+
+        classifier = 'svr' # Classifier to use for feature_ml: svr, svm, rf, dt
         if classifier == 'svr':
             self.classifier = SVR(C=1.0, epsilon=0.2)
         elif classifier == 'dt':
@@ -24,14 +26,14 @@ class Feature_ML():
         elif classifier == 'svm':
             self.classifier = SVC(gamma='auto', class_weight='balanced')
         elif classifier == 'mlp':
-            self.classifier = MLPRegressor(random_state=1, max_iter=500, batch_size=16)
+            self.classifier = MLPRegressor(random_state=1, max_iter=500, batch_size=32)
         self.clf = classifier
         self.scaler = StandardScaler()
 
         self.labeler_idx = 1
         self.combine_34 = True
         self.equalize_class_samples = True
-        self.n_selected_features = None #15   # 20, None if want to use all features
+        self.n_selected_features = 20 #15   # 20, None if want to use all features
 
         self.min_num_peaks = 7
         self.amp_dec_thresh = 0.9
