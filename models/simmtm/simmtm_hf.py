@@ -36,13 +36,14 @@ class TFC(torch.nn.Module):
 
         self.training_mode = 'pre_train'
 
-        self.name = 'sim_mtm'
+        self.name = 'sim_mtm_hf'
+        self.top_features = 47
         self.kernel_size = configs.kernel_size
         self.task = task
         self.datasets = datasets
         self.device = torch.device(device) #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.combine_34 = True
-        self.sample_format = 'unscaled' #'unscaled'   # input data format: 'scaled_kpt', 'unscaled_kpt', 'scaled', 'unscaled'
+        self.sample_format = 'scaled_hf' #'unscaled'   # input data format: 'scaled_kpt', 'unscaled_kpt', 'scaled', 'unscaled'
 
         self.use_ratio = False
         self.sequence_len = length
@@ -59,58 +60,70 @@ class TFC(torch.nn.Module):
 
         self.class_cnts = class_cnts
         self.conv_block1 = nn.Sequential(
-            nn.Conv1d(configs.input_channels, 32, kernel_size=configs.kernel_size,
+            nn.Conv1d(configs.input_channels, 2, kernel_size=configs.kernel_size,
                       stride=configs.stride, bias=False, padding=(configs.kernel_size // 2)),
-            nn.BatchNorm1d(32),
+            nn.BatchNorm1d(2),
             nn.ReLU(),
             nn.MaxPool1d(kernel_size=2, stride=2, padding=1),
             nn.Dropout(configs.dropout)
         )
 
         self.conv_block2 = nn.Sequential(
-            nn.Conv1d(32, 64, kernel_size=8, stride=1, bias=False, padding=4),
-            nn.BatchNorm1d(64),
+            nn.Conv1d(2, 4, kernel_size=8, stride=1, bias=False, padding=4),
+            nn.BatchNorm1d(4),
             nn.ReLU(),
             nn.MaxPool1d(kernel_size=2, stride=2, padding=1)
         )
 
         self.conv_block3 = nn.Sequential(
-            nn.Conv1d(64, configs.final_out_channels, kernel_size=8, stride=1, bias=False, padding=4),
+            nn.Conv1d(4, configs.final_out_channels, kernel_size=8, stride=1, bias=False, padding=4),
             nn.BatchNorm1d(configs.final_out_channels),
             nn.ReLU(),
             nn.MaxPool1d(kernel_size=2, stride=2, padding=1),
         )
 
         self.dense = nn.Sequential(
-            nn.Linear(configs.CNNoutput_channel * configs.final_out_channels, 256),
-            nn.BatchNorm1d(256),
+            nn.Linear(configs.CNNoutput_channel * configs.final_out_channels, 32),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
-            nn.Linear(256, 128)
+            nn.Linear(32, 128)
         )
 
         self.awl = AutomaticWeightedLoss(2)
         self.contrastive = ContrastiveWeight(configs)
         self.aggregation = AggregationRebuild(configs)
-        self.head = nn.Linear(1280, 178)
+        self.head = nn.Linear(10, 178)
         self.loss = torch.nn.MSELoss()
 
-        self.classifier = target_classifier(configs)
+        self.classifier = target_classifier(configs, self.top_features)
         self.to(self.device)
 
     def init_classifier(self,):
-        self.classifier = target_classifier(configs)
+        self.classifier = target_classifier(configs, self.top_features)
         self.to(self.device)
 
-    def forward(self, x_in_t, mode=None):
+    def forward(self, x_in_t, hf, mode=None):
         x = self.conv_block1(x_in_t)
         x = self.conv_block2(x)
         x = self.conv_block3(x)
 
         h = x.reshape(x.shape[0], -1)
         z = self.dense(h)
-        predictions = self.classifier(h)
 
-        if mode == 'train':
+        hf = hf[:,:self.top_features]
+
+        if mode == 'pretrain':
+            loss_cl, similarity_matrix, logits, positives_mask = self.contrastive(z)
+            rebuild_weight_matrix, agg_x = self.aggregation(similarity_matrix, x)
+            pred_x = self.head(agg_x.reshape(agg_x.size(0), -1))
+
+            loss_rb = self.loss(pred_x, x_in_t.reshape(x_in_t.size(0), -1).detach())
+            loss = self.awl(loss_cl, loss_rb)
+            return loss, loss_cl, loss_rb, pred_x
+
+        elif mode == 'train':
+            predictions, _ = self.classifier(h, hf)
+
             loss_cl, similarity_matrix, logits, positives_mask = self.contrastive(z)
             rebuild_weight_matrix, agg_x = self.aggregation(similarity_matrix, x)
             pred_x = self.head(agg_x.reshape(agg_x.size(0), -1))
@@ -120,13 +133,15 @@ class TFC(torch.nn.Module):
 
             return loss, loss_cl, loss_rb, pred_x, predictions
         elif mode == 'inference':
+            predictions, _ = self.classifier(h, hf)
             return predictions
         else:
+            predictions, embedding = self.classifier(h, hf)
             predictions = torch.argmax(predictions, dim=1)
 
-            return predictions 
+            return predictions, embedding
 
-    def setup_dataset(self, x, y, subj_ids=None):
+    def setup_dataset(self, x, y, hf, subj_ids=None):
         '''
         '''
         # Create dataset
@@ -134,6 +149,12 @@ class TFC(torch.nn.Module):
             x_tensor = torch.from_numpy(x).float()
         else:
             x_tensor = x
+
+        if not isinstance(hf, torch.Tensor):
+            hf_tensor = torch.from_numpy(hf).float()
+        else:
+            hf_tensor = hf
+
         if not isinstance(y, torch.Tensor):
             y_tensor = torch.from_numpy(y).long() if self.task == 'multiclass' else torch.from_numpy(y).float()
         else:
@@ -153,21 +174,42 @@ class TFC(torch.nn.Module):
             val_idxs = torch.tensor([i for i, id in enumerate(subj_ids) if id in val_ids])
 
             x_train = x_tensor[train_idxs].numpy()
+            hf_train = hf_tensor[train_idxs].numpy()
             y_train = y_tensor[train_idxs].numpy()
             x_val = x_tensor[val_idxs].numpy()
+            hf_val = hf_tensor[val_idxs].numpy()
             y_val = y_tensor[val_idxs].numpy()
+
+            x_train = np.mean(x_train, axis=2)
+            x_train = np.concatenate((x_train, hf_train), axis=1)
+            x_val = np.mean(x_val, axis=2)
+            x_val = np.concatenate((x_val, hf_val), axis=1)
 
             x_train, x_val, y_train, y_val, train_ids, val_ids = data_utils.balance_eval_split(x_train, x_val, y_train, y_val, 
                                                                                                 subj_ids[train_idxs], subj_ids[val_idxs],
                                                                                                 weight_annot_idx=self.labeler_idx,
                                                                                                 tol=1.0)
             # x_train, y_train = data_utils.equalize_class_samples(x_train, y_train)
-            x_train = np.mean(x_train, axis=2)
-            x_val = np.mean(x_val, axis=2)
+
 
             y_train = y_train[:, self.labeler_idx]
             y_val = y_val[:, self.labeler_idx]
 
+            # finetune with less data
+                    # use less label for finetune
+            data_size = len(y_train)
+            data_used = int(data_size*0.25)
+            ind_used = range(data_size)[:data_used]
+            x_finetune = x_train[ind_used]
+            y_finetune = y_train[ind_used]
+
+            x_finetune = torch.from_numpy(x_finetune).float()
+            y_finetune = torch.from_numpy(y_finetune).long() if self.task == 'multiclass' else torch.from_numpy(y_finetune).float()
+
+            # datasize = len(y_train)
+            # data_used = int(datasize*0.1)
+            # x_train = x_train[:data_used]
+            # y_train = y_train[:data_used]
 
             x_train = torch.from_numpy(x_train).float()
             x_val = torch.from_numpy(x_val).float()
@@ -189,6 +231,13 @@ class TFC(torch.nn.Module):
                                                     transforms_p=self.transforms_p, 
                                                     use_ratio=self.use_ratio,
                                                     seq_len=self.sequence_len)
+            
+            finetuneset = loader.CustomTensorDataset(tensors=(x_finetune, y_finetune), 
+                                                    transforms=self.transforms, 
+                                                    transforms_p=self.transforms_p, 
+                                                    use_ratio=self.use_ratio,
+                                                    seq_len=self.sequence_len)
+            
             valset = loader.CustomTensorDataset(tensors=(x_val, y_val), 
                                                     use_ratio=self.use_ratio,
                                                     seq_len=self.sequence_len)
@@ -213,7 +262,7 @@ class TFC(torch.nn.Module):
         #     sampler = None
         sampler = None
 
-        return trainset, valset, sampler
+        return trainset, valset, finetuneset, sampler
 
     def model_pretrain(self, model_optimizer, model_scheduler, train_loader, configs, device, epoch):
         total_loss = []
@@ -224,15 +273,18 @@ class TFC(torch.nn.Module):
         self.train()
         for batch_idx, (data, labels) in enumerate(train_loader):
             model_optimizer.zero_grad()
+            hf = data[:,178:]
+            data = data[:,:178]
             data = torch.unsqueeze(data, 1)
             data_masked_m, mask = data_transform_masked4cl(data, configs.masking_ratio, configs.lm, configs.positive_nums)
             data_masked_om = torch.cat([data, data_masked_m], 0)
 
             data, labels, data_masked_om = data.float().to(device), labels.float().to(device), data_masked_om.float().to(
                 device)
+            hf = hf.float().to(device)
 
             # Produce embeddings of original and masked samples
-            loss, loss_cl, loss_rb, x_decoded, prediction = self.forward(data_masked_om, mode = 'train')
+            loss, loss_cl, loss_rb, x_decoded = self.forward(data_masked_om, hf, mode = 'pretrain')
 
             loss.backward()
             model_optimizer.step()
@@ -283,11 +335,14 @@ class TFC(torch.nn.Module):
 
         for data, labels in train_dl:
             model_optimizer.zero_grad()
+            hf = data[:,178:]
+            data = data[:,:178]
             data = torch.unsqueeze(data, 1)
             data, labels = data.float().to(device), labels.long().to(device)
+            hf = hf.float().to(device)
 
             # Produce embeddings
-            loss_pretrain, loss_cl, loss_rb, x_decoded, predictions = self.forward(data, mode='train')
+            loss_pretrain, loss_cl, loss_rb, x_decoded, predictions = self.forward(data, hf, mode='train')
 
             loss = criterion(predictions, labels)
             # loss+=loss_pretrain*0.1
@@ -318,11 +373,13 @@ class TFC(torch.nn.Module):
         with torch.no_grad():
             labels_numpy_all, pred_numpy_all = np.zeros(1), np.zeros(1)
             for data, labels in test_dl:
+                hf = data[:,178:]
+                data = data[:,:178]
                 data = torch.unsqueeze(data, 1)
                 data, labels = data.float().to(device), labels.long().to(device)
-
+                hf = hf.float().to(device)
                 # Add supervised classifier: 1) it's unique to fine-tuning. 2) this classifier will also be used in test
-                predictions = self.forward(data, mode='inference')
+                predictions = self.forward(data, hf, mode='inference')
 
                 loss = criterion(predictions, labels)
 
@@ -337,7 +394,7 @@ class TFC(torch.nn.Module):
         return total_loss, total_acc
 
 
-    def trainer(self, x, y, 
+    def trainer(self, x, y, hf, 
               train_subj_ids=None,
               x_val=None, y_val=None):
         '''
@@ -346,7 +403,7 @@ class TFC(torch.nn.Module):
         x = x[:, :, :2]
 
         if x_val is None:
-            trainset, valset, sampler = self.setup_dataset(x, y, train_subj_ids)
+            trainset, valset, finetuneset, sampler = self.setup_dataset(x, y, hf, train_subj_ids)
         else:
             x_tensor = torch.from_numpy(x).float()
             x_val_tensor = torch.from_numpy(x_val).float()
@@ -364,15 +421,26 @@ class TFC(torch.nn.Module):
                                                 use_ratio=self.use_ratio)
             sampler = None
 
+
+
         train_loader = torch.utils.data.DataLoader(trainset, batch_size=configs.batch_size, 
                                                   shuffle=True, sampler=sampler, drop_last=True)
         val_loader = torch.utils.data.DataLoader(valset, batch_size=configs.batch_size, 
                                                 shuffle=False, drop_last=False)
 
-        
+        svr_loader = torch.utils.data.DataLoader(trainset, batch_size=configs.batch_size, 
+                                                  shuffle=False, sampler=sampler, drop_last=False)
+
+        finetune_loader = torch.utils.data.DataLoader(finetuneset, batch_size=configs.batch_size, 
+                                                  shuffle=True, sampler=sampler, drop_last=True)
+
+    
+
         for param in self.classifier.logits.parameters():
             param.requires_grad = False
         for param in self.classifier.logits_simple.parameters():
+            param.requires_grad = False
+        for param in self.classifier.logits_feature.parameters():
             param.requires_grad = False
 
         params_group = [{'params': self.parameters()}]
@@ -402,6 +470,8 @@ class TFC(torch.nn.Module):
                     param.requires_grad = True
                 for param in self.classifier.logits_simple.parameters():
                     param.requires_grad = True
+                for param in self.classifier.logits_feature.parameters():
+                    param.requires_grad = True
 
                 ft_model_optimizer = torch.optim.Adam(self.parameters(), lr=configs.finetune_lr, betas=(configs.beta1, configs.beta2), weight_decay=0)
                 ft_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=model_optimizer, T_max=configs.finetune_epoch)
@@ -424,10 +494,29 @@ class TFC(torch.nn.Module):
                         best_epoch = (epoch, ft_epoch)
                         best_model = copy.deepcopy(self.state_dict())
 
+                # # svr training
+                # if best_model is not None:
+                #     self.load_state_dict(best_model)
+                # self.eval()
+                # train_x = []
+                # train_y = []
+                # for data, labels in svr_loader:
+                #     if not train_x:
+                #         train_x = data
+                #         train_y = labels
+                #     else:
+                #         train_x = torch.concatenate((train_x, data), dim=0)
+                #         train_y = torch.concatenate((train_y, labels), dim=0)
+                #     a=1
+
+
+
                 for param in self.classifier.logits.parameters():
-                    param.requires_grad = True
+                    param.requires_grad = False
                 for param in self.classifier.logits_simple.parameters():
-                    param.requires_grad = True
+                    param.requires_grad = False
+                for param in self.classifier.logits_feature.parameters():
+                    param.requires_grad = False
 
                 params_group = [{'params': self.parameters()}]
                 model_optimizer = torch.optim.Adam(params_group, lr=configs.pretrain_lr, betas=(configs.beta1, configs.beta2),
@@ -443,17 +532,20 @@ class TFC(torch.nn.Module):
 
 
 class target_classifier(nn.Module):  # Classification head
-    def __init__(self, configs):
+    def __init__(self, configs, top_features):
         super(target_classifier, self).__init__()
-        self.logits = nn.Linear(1280, 64)
+        self.logits = nn.Linear(10, 8)
+        self.logits_feature = nn.Linear(top_features, 16)
         self.dropout = nn.Dropout(0.5)
-        self.logits_simple = nn.Linear(64, configs.num_classes_target)
+        self.logits_simple = nn.Linear(24, configs.num_classes_target)
 
-    def forward(self, emb):
+    def forward(self, emb, feature):
         """2-layer MLP"""
         emb_flat = emb.reshape(emb.shape[0], -1)
         emb = torch.sigmoid(self.logits(emb_flat))
         emb = self.dropout(emb)
+        feature_emb = self.logits_feature(feature)
+        emb = torch.concatenate((emb, feature_emb), dim=1)
         pred = self.logits_simple(emb)
-        return pred
+        return pred, emb
 

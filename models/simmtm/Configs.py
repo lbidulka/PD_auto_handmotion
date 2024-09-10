@@ -4,7 +4,7 @@ class Config(object):
         # model configs
         self.input_channels = 1
         self.increased_dim = 1
-        self.final_out_channels = 128
+        self.final_out_channels = 1
         self.num_classes = 4
         self.num_classes_target = 4
         self.dropout = 0.2
@@ -30,7 +30,7 @@ class Config(object):
         self.lr = 3e-8 # 3e-4
         self.lr_f = self.lr
         self.pretrain_lr = 0.0001
-        self.pretrain_epoch = 50
+        self.pretrain_epoch = 100
         self.finetune_lr = 0.0001
         self.finetune_epoch = 40
         # masking

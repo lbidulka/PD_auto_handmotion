@@ -16,7 +16,7 @@ def scale_to_uniform_len(x, max_seq_len=256, smooth_output=False):
         x: n_samples long list of (sample_len, num_kpts, 3) np arrays
         '''
         # increase max_seq_len to nearest multiple of 8
-        max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
+        # max_seq_len = max_seq_len + (8 - max_seq_len % 8) if max_seq_len % 8 != 0 else max_seq_len
         x_rescale = []
         rescale_ratios = []
         for i, sample in enumerate(x):
