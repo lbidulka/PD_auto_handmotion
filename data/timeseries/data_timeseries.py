@@ -8,7 +8,7 @@ import utils.features
 import utils._dummy_dataset
 
 class data_timeseries():
-    def __init__(self, datasets=None, UPDRS_task=None, kpts_uniform_len=178) -> None:
+    def __init__(self, datasets=None, UPDRS_task=None, kpts_uniform_len=256) -> None:
         self.fingertip_kpts = [8, 12, 16, 20]  # all finger tips
         self.kpts_uniform_len = kpts_uniform_len
         self.smooth_rescaled_kpts = False
@@ -146,7 +146,6 @@ class data_timeseries():
         '''
         subj_idxs = np.where(np.isin(self.subj_ids, subj_ids))[0]
         out_y = self.y[subj_idxs]
-        hf = None
         if combine_34: out_y[out_y == 4] = 3
 
         if format == 'scaled':
@@ -161,49 +160,22 @@ class data_timeseries():
                                 axis=1)
         elif format == 'scaled_hf':
             out_x = self.x_kpts[subj_idxs]
-            # normalized by palm size
             palm = out_x[:, :, :1, :]
-            palm_keypoints = [5,9,13,17]
-            palm_keypoints = out_x[:,:,palm_keypoints, :]
-            palm_size = np.linalg.norm(palm_keypoints - palm, axis=-1)
-            palm_size = np.mean(palm_size, axis = -1)
-            palm_size = np.expand_dims(palm_size, axis = 2)
-            palm_size = np.repeat(palm_size, 4, axis = 2)
-
             tips = out_x[:, :, self.fingertip_kpts, :]
             out_x = np.linalg.norm(tips - palm, axis=-1)
-            out_x = out_x/palm_size
             # append ratio to last entry
             subj_rescale_ratios = self.upscale_ratios[subj_idxs]
-            subj_rescale_ratios = np.expand_dims(subj_rescale_ratios, axis = 1)
+            out_x = np.append(out_x, 
+                            np.repeat(subj_rescale_ratios.reshape(-1,1,1), 4, axis=-1), 
+                            axis=1)
+            # pad and reshape handcraft features, then insert at 2nd last position
             hf = self.handcraft_feats[subj_idxs]
-            hf = np.concatenate([hf, subj_rescale_ratios], axis=1)
-
+            hf = hf.reshape(hf.shape[0], -1, 1).repeat(4, 2)
+            # hf = np.append(hf, pad, axis=1).reshape(-1, 1, out_x.shape[2], out_x.shape[3])
+            # insert at 2nd last position
+            out_x = np.concatenate([out_x[:,:-1], hf, out_x[:,-1:]], axis=1)
         elif format == 'unscaled':
-            out_x = []
-            for i, ts in enumerate(self.x_unscaled):
-                if i in subj_idxs:
-                    if len(ts)>=178:
-                        out_x.append(ts[:178,:])
-                    else:
-                        temp = np.zeros((178,4))
-                        temp[:len(ts),:] = ts
-                        out_x.append(temp)
-            out_x = np.asarray(out_x)
-
-        elif format == 'unscaled_hf':
-            out_x = []
-            for i, ts in enumerate(self.x_unscaled):
-                if i in subj_idxs:
-                    if len(ts)>=178:
-                        out_x.append(ts[:178,:])
-                    else:
-                        temp = np.zeros((178,4))
-                        temp[:len(ts),:] = ts
-                        out_x.append(temp)
-            out_x = np.asarray(out_x)
-            hf = self.handcraft_feats[subj_idxs]
-
+            out_x = [ts for i, ts in enumerate(self.x_unscaled) if i in subj_idxs]
 
         elif format == 'unscaled_kpt':
             out_x = self.x_kpts_unscaled[subj_idxs] #[ts for i, ts in enumerate(self.x_kpts) if i in subj_idxs]
@@ -231,5 +203,5 @@ class data_timeseries():
         out_ids = self.subj_ids[subj_idxs]
         out_ids = np.array([int(id) for id in out_ids])
 
-        return [out_x, out_y, out_ids, hf]
+        return [out_x, out_y, out_ids]
     

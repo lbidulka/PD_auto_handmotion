@@ -4,14 +4,14 @@ class Config(object):
         # model configs
         self.input_channels = 1
         self.increased_dim = 1
-        self.final_out_channels = 1
+        self.final_out_channels = 8 # encoder out channels
         self.num_classes = 4
         self.num_classes_target = 4
         self.dropout = 0.2
         self.masking_ratio = 0.5
         self.lm = 3 # average length of masking subsequences
 
-        self.kernel_size = 25
+        self.kernel_size = 8
         self.stride = 3
         self.features_len = 127
         self.features_len_f = self.features_len
@@ -20,19 +20,29 @@ class Config(object):
 
         self.CNNoutput_channel = 10 # 90 # 10 for Epilepsy model
 
+        self.CNN_skip_connections = False    # use skip connections? (NOT YET WORKING)
+
         # training configs
         self.num_epoch = 40
+        self.reinit_classifier = True # reinitialize the classifier before each new fine-tuning?
+        self.reinit_encoder = False     # reset encoder to pre- fine-tuning weights afterwards?
+        self.freeze_encoder = True  # Freeze the encoder during the training of the classifier? 
+        self.finetune_frac = 0.25   # fraction of train data to use for fine-tuning the classifier
+
+        self.debug_recon_eps_printout = 50  # print out reconstruction results at what ep. freq. during training
 
         # optimizer parameters
         self.optimizer = 'adam'
         self.beta1 = 0.9
         self.beta2 = 0.99
-        self.lr = 3e-8 # 3e-4
-        self.lr_f = self.lr
-        self.pretrain_lr = 0.0001
-        self.pretrain_epoch = 100
-        self.finetune_lr = 0.0001
-        self.finetune_epoch = 40
+        # self.lr = 3e-8 # 3e-4
+        # self.lr_f = self.lr
+        self.pretrain_lr = 5e-5    # 1e-4
+        self.pretrain_epoch = 50
+        self.finetune_lr = 5e-4    # 1e-4
+        self.finetune_epoch = 50
+        self.ft_freq = 5          # fine-tune a classifier every this many epochs
+
         # masking
         self.masking_ratio = 0.5
         self.lm = 3 # average masked length

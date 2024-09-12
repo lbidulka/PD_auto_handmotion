@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument('--datasets', default='PD4T,CAMERA', help='Datasets to process (comma separated, no spaces)')   # CAMERA, PD4T, dummy
     parser.add_argument('--rand_baseline', default=False, help='Use random baseline?')   # True False
 
-    parser.add_argument('--model', default='sim_mtm_hf', help='Model to use')   # ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
+    parser.add_argument('--model', default='sim_mtm_hf', help='Model to use')   # sim_mtm_hf, ddnet, dist_ddnet, feature_ml, cnn_vae, updrs_dsp, simple_mlp, simple_cnn, ratio_mlp, feature_mlp
 
     parser.add_argument('--wblog', default=False, help='Log to wandb?')   # True False
     parser.add_argument('--num_trials', default=5, help='Number of trials to run')   # 1, 5, 10
@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument('--save_model', default=False, help='Save deep model?')   # True False
     parser.add_argument('--save_model_path', default='./checkpoints/', help='Path to save models')
 
-    parser.add_argument('--device', default='cuda:1', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
+    parser.add_argument('--device', default='cuda:0', help='Device to run on')   # cuda, cuda:0, cuda:1, cpu
 
     args = parser.parse_args() 
     return args
@@ -293,8 +293,8 @@ def N_fold_eval(args, model, data):
         eval_subj_data = data.get_subj_data([eval_subjs], format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
         train_subj_data = data.get_subj_data(subj_ids[[id not in eval_subjs for id in subj_ids]], 
                                              format=data_format, use_ratio=model.use_ratio, combine_34=combine_34)
-        train_x, train_y, train_subj_ids, train_hf = train_subj_data[0], train_subj_data[1], train_subj_data[2], train_subj_data[3]
-        test_x, test_y, test_subj_ids, test_hf = eval_subj_data[0], eval_subj_data[1], eval_subj_data[2], eval_subj_data[3]
+        train_x, train_y, train_subj_ids = train_subj_data[0], train_subj_data[1], train_subj_data[2]
+        test_x, test_y, test_subj_ids = eval_subj_data[0], eval_subj_data[1], eval_subj_data[2]
 
         # Convert to binary classification if needed
         if args.task == 'binclass':
@@ -311,19 +311,21 @@ def N_fold_eval(args, model, data):
                 model.init_model(class_cnts=class_cnt)
             else: 
                 model.init_model()
-            # model.trainer(train_x, train_y, train_subj_ids=train_subj_ids)
-            model.trainer(train_x, train_y, train_hf, train_subj_ids=train_subj_ids)
+            model.trainer(train_x, train_y, train_subj_ids=train_subj_ids)
             model.eval()
             
             # sim_mtm require input length 178 
-            if model.name == 'sim_mtm' or model.name == 'sim_mtm_hf':
-                test_x = np.mean(test_x[:,:,:2], axis=2)[:,:178]
-                test_x = np.expand_dims(test_x, axis=1)
-                test_x = torch.tensor(test_x, dtype=torch.float32).to(args.device)
+            # if model.name == 'sim_mtm' or model.name == 'sim_mtm_hf':
+            #     test_x = np.mean(test_x[:,:,:2], axis=2)[:,:model.sequence_len]
+            #     test_x = np.expand_dims(test_x, axis=1)
+            #     test_x = torch.tensor(test_x, dtype=torch.float32).to(args.device)
 
-            test_hf = torch.tensor(test_hf, dtype=torch.float32).to(args.device)
-            # test_pred = model(test_x)
-            test_pred, embedding = model(test_x, test_hf)
+            
+            if model.name in ['sim_mtm', 'sim_mtm_hf']:
+                test_pred, _ = model(test_x)
+            else:
+                test_pred = model(test_x)
+
             if model.name != 'feature_ml':
                 test_pred = test_pred.cpu().numpy()
 
@@ -422,9 +424,11 @@ if __name__ == '__main__':
         elif eval_model == 'sim_mtm':
             model = simmtm.TFC(task=args.task, datasets=args.datasets, device=args.device, 
                                    length=178)
+            data = data_timeseries.data_timeseries(args.datasets, args.UPDRS_task, kpts_uniform_len=model.sequence_len)  # set kpts series len
         elif eval_model == 'sim_mtm_hf':
             model = simmtm_hf.TFC(task=args.task, datasets=args.datasets, device=args.device, 
                                    length=178)
+            data = data_timeseries.data_timeseries(args.datasets, args.UPDRS_task, kpts_uniform_len=model.sequence_len)  # set kpts series len
         # FEATURE BASELINES
         elif eval_model == 'feature_ml':
             model = feature_ml.Feature_ML(task=args.task,)

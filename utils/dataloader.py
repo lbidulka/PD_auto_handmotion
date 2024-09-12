@@ -6,8 +6,7 @@ import utils.data as data_utils
 class CustomTensorDataset(torch.utils.data.Dataset):
     '''TensorDataset with support of transforms.
     '''
-    def __init__(self, tensors, transforms=None, transforms_p=None, use_ratio=False,
-                 seq_len=-1):
+    def __init__(self, tensors, transforms=None, transforms_p=None, seq_len=-1):
         assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors)
         self.tensors = tensors
         self.transforms = transforms
@@ -21,13 +20,10 @@ class CustomTensorDataset(torch.utils.data.Dataset):
         if self.transforms:
             for transform, transform_p in zip(self.transforms, self.transforms_p):
                 if torch.rand(1) < transform_p:
-                    # dont apply transform to ratio (final entry)
-                    if self.use_ratio:
-                        x, y = transform(x[:self.seq_len], y)
-                    else:
-                        x, y = transform(x[:self.seq_len], y)
-                else:
-                    x = x[:self.seq_len]
+                    # dont apply transform to features
+                    x[:self.seq_len], y = transform(x[:self.seq_len], y)
+                # else:
+                #     x = x[:self.seq_len]
 
         return x, y
     
